@@ -278,7 +278,7 @@
         <input id="heightRange" type="range" min="240" max="2160" step="2" value="720">
         <input id="heightNum" type="number" min="240" max="2160" step="2" value="720">
       </div>
-      <p class="note">720p is recommended for phone export. Fast export processes frames offline at the maximum speed your device can handle; AI mode may still be much slower than SBS mode.</p>
+      <p class="note">720p is recommended for phone export. Fast Export Engine v4 processes frames offline. On iPhone it streams long exports to temporary browser storage instead of holding the whole movie in RAM; AI mode may still be much slower than SBS mode.</p>
     </section>
 
     <section class="card">
@@ -361,6 +361,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   let chunks = [];
   let exportObjectURL = null;
   let fastConversion = null;
+  let fastOutput = null;
   let exportCancelled = false;
   let mediabunnyModule = null;
 
@@ -1099,7 +1100,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
     const targetH = even(outH.num.value);
 
     if (targetW * targetH > 1920 * 1080) {
-      const okay = confirm("High-resolution phone export can use a lot of memory. Continue anyway?");
+      const okay = confirm("High-resolution phone export can use a lot of memory and processing power. Continue anyway?");
       if (!okay) return;
     }
 
@@ -1109,22 +1110,26 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       if (!aiLoaded) return;
     }
 
-    // WebCodecs is the key to faster-than-playback export. If this browser
-    // does not expose it, keep the old real-time recorder as a fallback.
     if (!("VideoEncoder" in window) || !("VideoDecoder" in window)) {
-      setStatus("Fast export is not supported by this browser. Falling back to real-time export.");
+      setStatus("Fast Export Engine v4 is unavailable here. Using compatible real-time export.");
       return beginRealtimeExport();
     }
 
     let input = null;
     let output = null;
+    let target = null;
+    let tempFileHandle = null;
+    let fallbackToRealtime = false;
+    let failureMessage = "";
     let fastStage = "starting";
 
     try {
       exporting = true;
       exportCancelled = false;
       fastConversion = null;
+      fastOutput = null;
       saveLink.classList.add("hidden");
+
       if (exportObjectURL) {
         URL.revokeObjectURL(exportObjectURL);
         exportObjectURL = null;
@@ -1138,150 +1143,262 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       progress.value = 0;
       playBtn.disabled = true;
       video.pause();
-      setStatus("Starting fast offline export…");
+
+      setStatus("Fast Export Engine v4: opening video…");
 
       const MB = await getMediabunny();
-      const target = new MB.BufferTarget();
+
+      fastStage = "opening input file";
       input = new MB.Input({
         formats: MB.ALL_FORMATS,
-        source: new MB.BlobSource(loadedFile, { maxCacheSize: 8 * 1024 * 1024 })
+        source: new MB.BlobSource(loadedFile, {
+          maxCacheSize: 8 * 1024 * 1024,
+          useStreamReader: false
+        })
       });
+
+      const videoTrack = await input.getPrimaryVideoTrack();
+      if (!videoTrack) throw new Error("No video track was found in this file.");
+      if (!(await videoTrack.canDecode())) {
+        throw new Error("Safari cannot decode this video's codec with WebCodecs.");
+      }
+
+      const audioTrack = await input.getPrimaryAudioTrack();
+      let useAudio = false;
+      if (audioTrack) {
+        try {
+          useAudio = await audioTrack.canDecode();
+        } catch {
+          useAudio = false;
+        }
+        if (!useAudio) {
+          throw new Error("Safari cannot decode this video's audio track with WebCodecs.");
+        }
+      }
+
+      fastStage = "creating output file";
+
+      try {
+        if (navigator.storage?.getDirectory && typeof MB.StreamTarget === "function") {
+          const root = await navigator.storage.getDirectory();
+          tempFileHandle = await root.getFileHandle("__anaglyph_export_v4.mp4", { create: true });
+          const writable = await tempFileHandle.createWritable();
+          target = new MB.StreamTarget(writable, {
+            chunked: true,
+            chunkSize: 2 * 1024 * 1024
+          });
+        }
+      } catch (opfsErr) {
+        console.warn("OPFS streaming unavailable; using memory target:", opfsErr);
+        tempFileHandle = null;
+        target = null;
+      }
+
+      if (!target) {
+        target = new MB.BufferTarget();
+      }
+
       output = new MB.Output({
         format: new MB.Mp4OutputFormat(),
         target
       });
+      fastOutput = output;
 
       exportCanvas.width = targetW;
       exportCanvas.height = targetH;
       if (!exportRenderer) exportRenderer = new AnaglyphRenderer(exportCanvas, true);
 
+      const videoSource = new MB.CanvasSource(exportCanvas, {
+        codec: "avc",
+        quality: new MB.Quality({ bitrate: 4_000_000 }),
+        hardwareAcceleration: "no-preference"
+      });
+      output.addVideoTrack(videoSource);
+
+      let audioSource = null;
+      if (useAudio) {
+        try {
+          audioSource = new MB.AudioSampleSource({
+            codec: "aac",
+            quality: new MB.Quality({ bitrate: 160_000 })
+          });
+          output.addAudioTrack(audioSource);
+        } catch (audioInitErr) {
+          console.warn("Fast audio encoder unavailable:", audioInitErr);
+          throw new Error("Fast audio encoding is unavailable on this device.");
+        }
+      }
+
+      fastStage = "starting encoder";
+      await output.start();
+
+      const videoSink = new MB.VideoSampleSink(videoTrack, {
+        hardwareAcceleration: "no-preference"
+      });
+      const audioSink = useAudio ? new MB.AudioSampleSink(audioTrack) : null;
+
+      const videoFirst = await videoTrack.getFirstTimestamp();
+      const audioFirst = useAudio ? await audioTrack.getFirstTimestamp() : videoFirst;
+      const safeVideoFirst = Number.isFinite(Number(videoFirst)) ? Number(videoFirst) : 0;
+      const safeAudioFirst = Number.isFinite(Number(audioFirst)) ? Number(audioFirst) : safeVideoFirst;
+      const timeBase = Math.min(safeVideoFirst, safeAudioFirst);
+
+      let duration = Number(video.duration);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        duration = await videoTrack.computeDuration();
+      }
+      duration = Math.max(0.001, Number(duration) || 0.001);
+
       const exportSettings = { ...getSettings() };
       const fastUseAi = exportSettings.useDepth;
       const depthStep = 1 / clamp(depthFps.num.value, 1, 6);
       let nextDepthTime = -Infinity;
-      // iPhone Safari is picky about VideoFrame-like objects. Decode each frame
-      // into a normal 2D canvas, render that canvas through WebGL, then return the
-      // finished export canvas directly to Mediabunny.
+
       const frameCanvas = document.createElement("canvas");
-      const frameCtx = frameCanvas.getContext("2d", { alpha: false });
-      if (!frameCtx) throw new Error("Could not create the iPhone frame buffer.");
-
-      // Reusable raw RGBA buffers.  The important iPhone/Safari fix is that the
-      // process callback returns a Mediabunny VideoSample made from bytes, not a
-      // canvas/VideoFrame-like object.  This avoids Safari's "Unsupported input
-      // type: object" path when the processed canvas is handed to WebCodecs.
-      let rgbaBottomUp = new Uint8Array(targetW * targetH * 4);
-      let rgbaTopDown = new Uint8Array(targetW * targetH * 4);
-      fastStage = "opening input";
-
-      function readExportPixelsTopDown() {
-        const gl = exportRenderer.gl;
-        const needed = targetW * targetH * 4;
-        if (rgbaBottomUp.length !== needed) rgbaBottomUp = new Uint8Array(needed);
-        if (rgbaTopDown.length !== needed) rgbaTopDown = new Uint8Array(needed);
-
-        gl.finish();
-        gl.readPixels(0, 0, targetW, targetH, gl.RGBA, gl.UNSIGNED_BYTE, rgbaBottomUp);
-        const rowBytes = targetW * 4;
-        for (let y = 0; y < targetH; y++) {
-          const src = (targetH - 1 - y) * rowBytes;
-          rgbaTopDown.set(rgbaBottomUp.subarray(src, src + rowBytes), y * rowBytes);
-        }
-        return rgbaTopDown;
-      }
-
-      setStatus("Opening video and preparing the fast encoder…");
-      fastStage = "creating conversion";
-      fastConversion = await MB.Conversion.init({
-        input,
-        output,
-        tracks: "primary",
-        video: {
-          codec: "avc",
-          quality: new MB.Quality({ bitrate: 6_000_000 }),
-          hardwareAcceleration: "prefer-hardware",
-          forceTranscode: true,
-          processedWidth: targetW,
-          processedHeight: targetH,
-          process: async (sample) => {
-            if (exportCancelled) return null;
-
-            fastStage = "drawing decoded frame";
-            const sw = Math.max(2, Math.round(sample.displayWidth));
-            const sh = Math.max(2, Math.round(sample.displayHeight));
-            if (frameCanvas.width !== sw) frameCanvas.width = sw;
-            if (frameCanvas.height !== sh) frameCanvas.height = sh;
-            frameCtx.clearRect(0, 0, sw, sh);
-            sample.draw(frameCtx, 0, 0, sw, sh);
-
-            if (fastUseAi && sample.timestamp + 1e-6 >= nextDepthTime) {
-              fastStage = "AI depth";
-              await updateDepthFromSource(frameCanvas, sw, sh);
-              nextDepthTime = sample.timestamp + depthStep;
-            }
-
-            fastStage = "anaglyph render";
-            exportRenderer.render(frameCanvas, targetW, targetH, exportSettings);
-
-            fastStage = "reading rendered pixels";
-            const pixels = readExportPixelsTopDown();
-
-            fastStage = "building encoded frame";
-            const init = {
-              format: "RGBA",
-              codedWidth: targetW,
-              codedHeight: targetH,
-              timestamp: sample.timestamp
-            };
-            if (Number.isFinite(sample.duration) && sample.duration > 0) {
-              init.duration = sample.duration;
-            }
-
-            // Raw-byte construction is explicitly supported by Mediabunny and
-            // avoids the CanvasImageSource -> VideoFrame conversion that failed
-            // on the iPhone fast path.
-            return new MB.VideoSample(pixels.slice(), init);
-          }
-        }
+      const frameCtx = frameCanvas.getContext("2d", {
+        alpha: false,
+        willReadFrequently: false
       });
+      if (!frameCtx) throw new Error("Could not create the decoded-frame canvas.");
 
-      if (!fastConversion.isValid) {
-        throw new Error("This video's codec cannot be fast-exported on this device.");
+      let lastUiUpdate = 0;
+      const started = performance.now();
+
+      async function processVideoSample(sample) {
+        if (exportCancelled) return false;
+
+        fastStage = "drawing decoded video frame";
+        const sw = Math.max(2, Math.round(sample.displayWidth));
+        const sh = Math.max(2, Math.round(sample.displayHeight));
+
+        if (frameCanvas.width !== sw) frameCanvas.width = sw;
+        if (frameCanvas.height !== sh) frameCanvas.height = sh;
+
+        frameCtx.clearRect(0, 0, sw, sh);
+        sample.draw(frameCtx, 0, 0, sw, sh);
+
+        if (fastUseAi && sample.timestamp + 1e-6 >= nextDepthTime) {
+          fastStage = "calculating AI depth";
+          await updateDepthFromSource(frameCanvas, sw, sh);
+          nextDepthTime = sample.timestamp + depthStep;
+        }
+
+        fastStage = "rendering anaglyph";
+        exportRenderer.render(frameCanvas, targetW, targetH, exportSettings);
+
+        fastStage = "encoding canvas frame";
+        const ts = Math.max(0, sample.timestamp - timeBase);
+        const dur = Number.isFinite(sample.duration) && sample.duration > 0
+          ? sample.duration
+          : 1 / 30;
+
+        await videoSource.add(ts, dur);
+
+        const now = performance.now();
+        if (now - lastUiUpdate > 250) {
+          lastUiUpdate = now;
+          const fraction = Math.max(0, Math.min(1, ts / duration));
+          progress.value = fraction;
+          const elapsed = Math.max(0.05, (now - started) / 1000);
+          const speed = ts > 0 ? ts / elapsed : 0;
+          setStatus(`Fast Export v4: ${Math.round(fraction * 100)}% • ${speed.toFixed(1)}× playback speed`);
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        return true;
       }
 
-      const started = performance.now();
-      fastConversion.onProgress = (p) => {
-        const fraction = Math.max(0, Math.min(1, Number(p) || 0));
-        progress.value = fraction;
-        const elapsed = Math.max(0.05, (performance.now() - started) / 1000);
-        const processedTime = fraction * (Number(video.duration) || 0);
-        const speed = processedTime > 0 ? processedTime / elapsed : 0;
-        setStatus(`Fast export: ${Math.round(fraction * 100)}% • ${speed.toFixed(1)}× playback speed`);
-      };
+      const videoIter = videoSink.samples();
+      const audioIter = audioSink ? audioSink.samples() : null;
 
-      await fastConversion.execute();
-      if (exportCancelled) return;
+      let v = await videoIter.next();
+      let a = audioIter ? await audioIter.next() : { done: true, value: undefined };
+      const interleaveWindow = 4;
+      let windowEnd = interleaveWindow;
 
-      const buffer = target.buffer;
-      if (!buffer || !buffer.byteLength) throw new Error("The encoder produced an empty file.");
+      while (!v.done || !a.done) {
+        if (exportCancelled) break;
 
-      const blob = new Blob([buffer], { type: "video/mp4" });
-      exportObjectURL = URL.createObjectURL(blob);
+        while (!v.done && v.value.timestamp < windowEnd) {
+          const sample = v.value;
+          try {
+            if (!(await processVideoSample(sample))) break;
+          } finally {
+            sample.close();
+          }
+          v = await videoIter.next();
+        }
+
+        while (!a.done && a.value.timestamp < windowEnd) {
+          const sample = a.value;
+          try {
+            fastStage = "encoding audio";
+            sample.setTimestamp(Math.max(0, sample.timestamp - timeBase));
+            await audioSource.add(sample);
+          } finally {
+            sample.close();
+          }
+          a = await audioIter.next();
+        }
+
+        windowEnd += interleaveWindow;
+
+        if (v.done && a.done) break;
+      }
+
+      if (exportCancelled) {
+        try { await videoIter.return?.(); } catch {}
+        try { await audioIter?.return?.(); } catch {}
+        try { await output.cancel(); } catch {}
+        return;
+      }
+
+      fastStage = "finalizing MP4";
+      setStatus("Fast Export v4: finalizing MP4…");
+      await output.finalize();
+
+      fastStage = "preparing saved file";
+      let resultFileOrBlob;
+
+      if (tempFileHandle) {
+        resultFileOrBlob = await tempFileHandle.getFile();
+      } else {
+        const buffer = target.buffer;
+        if (!buffer || !buffer.byteLength) {
+          throw new Error("The encoder produced an empty MP4.");
+        }
+        resultFileOrBlob = new Blob([buffer], { type: "video/mp4" });
+      }
+
+      if (!resultFileOrBlob || !resultFileOrBlob.size) {
+        throw new Error("The exported MP4 is empty.");
+      }
+
+      exportObjectURL = URL.createObjectURL(resultFileOrBlob);
       const base = (loadedFile.name || "movie").replace(/\.[^.]+$/, "");
       saveLink.href = exportObjectURL;
       saveLink.download = `${base}_anaglyph.mp4`;
       saveLink.classList.remove("hidden");
       progress.value = 1;
-      setStatus("Fast export finished. Tap “Save exported video”.", "good");
+      setStatus("Fast Export Engine v4 finished. Tap “Save exported video”.", "good");
+
     } catch (err) {
-      console.error(err);
+      console.error("Fast Export Engine v4 failed:", err);
+
       if (!exportCancelled) {
-        const message = String(err.message || err);
-        const stage = (typeof fastStage !== "undefined" && fastStage) ? ` during ${fastStage}` : "";
-        setStatus(`Fast export failed${stage}: ${message}`, "danger");
+        failureMessage = String(err?.message || err);
+        const stage = fastStage ? ` during ${fastStage}` : "";
+        setStatus(`Fast Export v4 failed${stage}: ${failureMessage}. Switching to compatible export…`, "danger");
+        fallbackToRealtime = true;
       }
+
+      try {
+        if (output && output.state !== "finalized" && output.state !== "canceled") {
+          await output.cancel();
+        }
+      } catch {}
     } finally {
       try { input?.dispose?.(); } catch {}
+      fastOutput = null;
       fastConversion = null;
       exporting = false;
       exportBtn.disabled = false;
@@ -1289,10 +1406,18 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       loadAiBtn.disabled = false;
       playBtn.disabled = !loadedFile;
       cancelBtn.classList.add("hidden");
+
       if (exportCancelled) {
         progress.classList.add("hidden");
         saveLink.classList.add("hidden");
+        setStatus("Export cancelled.");
       }
+    }
+
+    if (fallbackToRealtime && !exportCancelled) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      setStatus(`Fast Export v4 was unavailable (${failureMessage}). Using compatible real-time export now.`);
+      return beginRealtimeExport();
     }
   }
 
@@ -1416,9 +1541,14 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   async function stopExport(cancelled) {
     if (!exporting) return;
 
-    if (fastConversion) {
+    if (fastOutput || fastConversion) {
       exportCancelled = !!cancelled;
-      try { await fastConversion.cancel(); } catch {}
+      try { await fastConversion?.cancel?.(); } catch {}
+      try {
+        if (fastOutput && fastOutput.state !== "finalized" && fastOutput.state !== "canceled") {
+          await fastOutput.cancel();
+        }
+      } catch {}
       if (cancelled) {
         setStatus("Export cancelled.");
         saveLink.classList.add("hidden");
