@@ -172,7 +172,7 @@
 <body>
 <div class="app">
   <h1>Anaglyph 3D AI Pop-out Converter</h1>
-  <div style="font-size:.78rem;color:#6fe28b;margin:-6px 0 10px">iPhone fast-export test build 4</div>
+  <div style="font-size:.78rem;color:#6fe28b;margin:-6px 0 10px">Regular export by default • optional experimental fast export</div>
 
   <div class="toolbar">
     <input id="fileInput" type="file" accept="video/*">
@@ -182,6 +182,11 @@
     <button id="exportBtn" type="button" disabled>Export</button>
     <button id="cancelBtn" type="button" class="hidden">Cancel</button>
     <span id="fileName" class="file-name">No video loaded</span>
+  </div>
+
+  <div class="check-row" style="margin:0 0 12px 2px">
+    <input id="useFastExport" type="checkbox">
+    <label for="useFastExport"><strong>Use fast export (experimental)</strong> — leave this OFF for the regular reliable exporter</label>
   </div>
 
   <div class="viewport">
@@ -278,7 +283,7 @@
         <input id="heightRange" type="range" min="240" max="2160" step="2" value="720">
         <input id="heightNum" type="number" min="240" max="2160" step="2" value="720">
       </div>
-      <p class="note">720p is recommended for phone export. Fast Export Engine v4 processes frames offline. On iPhone it streams long exports to temporary browser storage instead of holding the whole movie in RAM; AI mode may still be much slower than SBS mode.</p>
+      <p class="note">720p is recommended for phone export. Regular export is the default and is the most compatible option on iPhone. Enable “Use fast export (experimental)” only if you want to test the faster exporter.</p>
     </section>
 
     <section class="card">
@@ -348,6 +353,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   const saveLink = $("saveLink");
   const mode = $("mode");
   const useAi = $("useAi");
+  const useFastExport = $("useFastExport");
   const invertDepth = $("invertDepth");
   const aiBadge = $("aiBadge");
 
@@ -1076,7 +1082,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       await updateDepthFromSource(video, video.videoWidth, video.videoHeight);
 
       renderNow();
-      if (exporting && exportRenderer && !fastConversion) {
+      if (exporting && exportRenderer && !fastConversion && !fastOutput) {
         exportRenderer.render(video, even(outW.num.value), even(outH.num.value), getSettings());
       }
     } catch (err) {
@@ -1096,6 +1102,17 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   async function beginExport() {
     if (!loadedFile || exporting) return;
 
+    // Regular export is intentionally the default for iPhone compatibility.
+    if (!useFastExport.checked) {
+      return beginRealtimeExport();
+    }
+
+    return beginFastExport();
+  }
+
+  async function beginFastExport() {
+    if (!loadedFile || exporting) return;
+
     const targetW = even(outW.num.value);
     const targetH = even(outH.num.value);
 
@@ -1111,7 +1128,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
     }
 
     if (!("VideoEncoder" in window) || !("VideoDecoder" in window)) {
-      setStatus("Fast Export Engine v4 is unavailable here. Using compatible real-time export.");
+      setStatus("Fast Export Engine v4 is unavailable here. Using regular export.");
       return beginRealtimeExport();
     }
 
@@ -1416,7 +1433,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
 
     if (fallbackToRealtime && !exportCancelled) {
       await new Promise(resolve => setTimeout(resolve, 100));
-      setStatus(`Fast Export v4 was unavailable (${failureMessage}). Using compatible real-time export now.`);
+      setStatus(`Fast Export v4 was unavailable (${failureMessage}). Using regular export now.`);
       return beginRealtimeExport();
     }
   }
@@ -1521,7 +1538,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       };
 
       recorder.start(1000);
-      setStatus("Exporting in real time. Keep this app open until it finishes.");
+      setStatus("Regular export running. Keep this app open until it finishes.");
       await video.play();
       playBtn.textContent = "⏸ Pause";
       scheduleFrames();
