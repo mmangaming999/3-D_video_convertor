@@ -172,6 +172,7 @@
 <body>
 <div class="app">
   <h1>Anaglyph 3D AI Pop-out Converter</h1>
+  <div style="font-size:.78rem;color:#6fe28b;margin:-6px 0 10px">iPhone fast-export test build 4</div>
 
   <div class="toolbar">
     <input id="fileInput" type="file" accept="video/*">
@@ -1117,6 +1118,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
 
     let input = null;
     let output = null;
+    let fastStage = "starting";
 
     try {
       exporting = true;
@@ -1157,21 +1159,46 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       const fastUseAi = exportSettings.useDepth;
       const depthStep = 1 / clamp(depthFps.num.value, 1, 6);
       let nextDepthTime = -Infinity;
-      // iPhone Safari is picky about passing VideoFrame/WebGL canvases directly
-      // between WebCodecs and WebGL. Use a normal 2D canvas as a compatibility
-      // bridge, then hand the encoder an ImageBitmap-backed VideoSample.
+      // iPhone Safari is picky about VideoFrame-like objects. Decode each frame
+      // into a normal 2D canvas, render that canvas through WebGL, then return the
+      // finished export canvas directly to Mediabunny.
       const frameCanvas = document.createElement("canvas");
       const frameCtx = frameCanvas.getContext("2d", { alpha: false });
       if (!frameCtx) throw new Error("Could not create the iPhone frame buffer.");
 
+      // Reusable raw RGBA buffers.  The important iPhone/Safari fix is that the
+      // process callback returns a Mediabunny VideoSample made from bytes, not a
+      // canvas/VideoFrame-like object.  This avoids Safari's "Unsupported input
+      // type: object" path when the processed canvas is handed to WebCodecs.
+      let rgbaBottomUp = new Uint8Array(targetW * targetH * 4);
+      let rgbaTopDown = new Uint8Array(targetW * targetH * 4);
+      fastStage = "opening input";
+
+      function readExportPixelsTopDown() {
+        const gl = exportRenderer.gl;
+        const needed = targetW * targetH * 4;
+        if (rgbaBottomUp.length !== needed) rgbaBottomUp = new Uint8Array(needed);
+        if (rgbaTopDown.length !== needed) rgbaTopDown = new Uint8Array(needed);
+
+        gl.finish();
+        gl.readPixels(0, 0, targetW, targetH, gl.RGBA, gl.UNSIGNED_BYTE, rgbaBottomUp);
+        const rowBytes = targetW * 4;
+        for (let y = 0; y < targetH; y++) {
+          const src = (targetH - 1 - y) * rowBytes;
+          rgbaTopDown.set(rgbaBottomUp.subarray(src, src + rowBytes), y * rowBytes);
+        }
+        return rgbaTopDown;
+      }
+
       setStatus("Opening video and preparing the fast encoder…");
+      fastStage = "creating conversion";
       fastConversion = await MB.Conversion.init({
         input,
         output,
         tracks: "primary",
         video: {
           codec: "avc",
-          bitrate: 6_000_000,
+          quality: new MB.Quality({ bitrate: 6_000_000 }),
           hardwareAcceleration: "prefer-hardware",
           forceTranscode: true,
           processedWidth: targetW,
@@ -1179,6 +1206,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
           process: async (sample) => {
             if (exportCancelled) return null;
 
+            fastStage = "drawing decoded frame";
             const sw = Math.max(2, Math.round(sample.displayWidth));
             const sh = Math.max(2, Math.round(sample.displayHeight));
             if (frameCanvas.width !== sw) frameCanvas.width = sw;
@@ -1187,26 +1215,32 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
             sample.draw(frameCtx, 0, 0, sw, sh);
 
             if (fastUseAi && sample.timestamp + 1e-6 >= nextDepthTime) {
+              fastStage = "AI depth";
               await updateDepthFromSource(frameCanvas, sw, sh);
               nextDepthTime = sample.timestamp + depthStep;
             }
 
+            fastStage = "anaglyph render";
             exportRenderer.render(frameCanvas, targetW, targetH, exportSettings);
 
-            // Safari can reject an HTMLCanvasElement returned directly from an async
-            // processing callback. ImageBitmap is a well-supported CanvasImageSource.
-            if (typeof createImageBitmap !== "function") {
-              throw new Error("Fast export needs createImageBitmap on this iPhone/browser.");
+            fastStage = "reading rendered pixels";
+            const pixels = readExportPixelsTopDown();
+
+            fastStage = "building encoded frame";
+            const init = {
+              format: "RGBA",
+              codedWidth: targetW,
+              codedHeight: targetH,
+              timestamp: sample.timestamp
+            };
+            if (Number.isFinite(sample.duration) && sample.duration > 0) {
+              init.duration = sample.duration;
             }
-            const bitmap = await createImageBitmap(exportCanvas);
-            try {
-              return new MB.VideoSample(bitmap, {
-                timestamp: sample.timestamp,
-                duration: sample.duration
-              });
-            } finally {
-              if (typeof bitmap.close === "function") bitmap.close();
-            }
+
+            // Raw-byte construction is explicitly supported by Mediabunny and
+            // avoids the CanvasImageSource -> VideoFrame conversion that failed
+            // on the iPhone fast path.
+            return new MB.VideoSample(pixels.slice(), init);
           }
         }
       });
@@ -1216,11 +1250,13 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       }
 
       const started = performance.now();
-      fastConversion.onProgress = (p, processedTime) => {
-        progress.value = Math.max(0, Math.min(1, p || 0));
+      fastConversion.onProgress = (p) => {
+        const fraction = Math.max(0, Math.min(1, Number(p) || 0));
+        progress.value = fraction;
         const elapsed = Math.max(0.05, (performance.now() - started) / 1000);
-        const speed = Math.max(0, (processedTime || 0) / elapsed);
-        setStatus(`Fast export: ${Math.round((p || 0) * 100)}% • ${speed.toFixed(1)}× playback speed`);
+        const processedTime = fraction * (Number(video.duration) || 0);
+        const speed = processedTime > 0 ? processedTime / elapsed : 0;
+        setStatus(`Fast export: ${Math.round(fraction * 100)}% • ${speed.toFixed(1)}× playback speed`);
       };
 
       await fastConversion.execute();
@@ -1241,7 +1277,8 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       console.error(err);
       if (!exportCancelled) {
         const message = String(err.message || err);
-        setStatus(`Fast export failed: ${message}`, "danger");
+        const stage = (typeof fastStage !== "undefined" && fastStage) ? ` during ${fastStage}` : "";
+        setStatus(`Fast export failed${stage}: ${message}`, "danger");
       }
     } finally {
       try { input?.dispose?.(); } catch {}
@@ -1534,8 +1571,16 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   clearDepthCanvas();
   updateAiBadge();
 
+  // Test build: do not register the old service worker, because it can keep
+  // serving a cached copy of index.html on iPhone Safari after GitHub updates.
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
+    navigator.serviceWorker.getRegistrations().then(registrations => {
+      for (const registration of registrations) {
+        if (registration.scope.startsWith(location.origin + location.pathname.replace(/[^/]*$/, ""))) {
+          registration.unregister().catch(() => {});
+        }
+      }
+    }).catch(() => {});
   }
 })();
 </script>
