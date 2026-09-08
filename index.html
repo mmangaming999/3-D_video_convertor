@@ -1,5 +1,3 @@
-
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -279,7 +277,7 @@
         <input id="heightRange" type="range" min="240" max="2160" step="2" value="720">
         <input id="heightNum" type="number" min="240" max="2160" step="2" value="720">
       </div>
-      <p class="note">720p is recommended for phone export. AI export is still real-time and can be heavy for long videos.</p>
+      <p class="note">720p is recommended for phone export. Fast export processes frames offline at the maximum speed your device can handle; AI mode may still be much slower than SBS mode.</p>
     </section>
 
     <section class="card">
@@ -361,6 +359,9 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   let recorder = null;
   let chunks = [];
   let exportObjectURL = null;
+  let fastConversion = null;
+  let exportCancelled = false;
+  let mediabunnyModule = null;
 
   let audioContext = null;
   let mediaSourceNode = null;
@@ -459,12 +460,12 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   }
 
   class AnaglyphRenderer {
-    constructor(canvas) {
+    constructor(canvas, preserveDrawingBuffer = false) {
       this.canvas = canvas;
       const gl = canvas.getContext("webgl", {
         alpha: false,
         antialias: false,
-        preserveDrawingBuffer: false,
+        preserveDrawingBuffer,
         powerPreference: "high-performance"
       });
       if (!gl) throw new Error("WebGL is not available on this device.");
@@ -640,7 +641,10 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
     }
 
     render(videoEl, width, height, settings) {
-      if (!videoEl.videoWidth || videoEl.readyState < 2) return;
+      if (!videoEl) return;
+      if (typeof HTMLVideoElement !== "undefined" && videoEl instanceof HTMLVideoElement) {
+        if (!videoEl.videoWidth || videoEl.readyState < 2) return;
+      }
       width = Math.max(2, even(width));
       height = Math.max(2, even(height));
 
@@ -1022,6 +1026,33 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
     throw new Error("Unknown depth output format.");
   }
 
+  async function getMediabunny() {
+    if (mediabunnyModule) return mediabunnyModule;
+    mediabunnyModule = await import('https://cdn.jsdelivr.net/npm/mediabunny@1.55.7/dist/bundles/mediabunny.min.mjs');
+    return mediabunnyModule;
+  }
+
+  async function updateDepthFromSource(source, srcW, srcH) {
+    if (!aiLoaded || !depthEstimator || !source || !srcW || !srcH) return;
+
+    const maxSide = 256;
+    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+    const w = Math.max(64, even(srcW * scale));
+    const h = Math.max(64, even(srcH * scale));
+    if (captureCanvas.width !== w) captureCanvas.width = w;
+    if (captureCanvas.height !== h) captureCanvas.height = h;
+    captureCtx.drawImage(source, 0, 0, w, h);
+
+    const result = await depthEstimator(captureCanvas);
+    if (result?.depth) {
+      await drawRawImageToDepthCanvas(result.depth);
+    } else if (result?.predicted_depth) {
+      normalizeDepthFromTensor(result.predicted_depth);
+    } else {
+      throw new Error("Depth model returned an unknown result.");
+    }
+  }
+
   async function requestDepthUpdate(force = false) {
     if (!useAi.checked || mode.value !== "2d") return;
     if (!aiLoaded || !depthEstimator || !video.videoWidth || video.readyState < 2) return;
@@ -1040,27 +1071,10 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
     depthFrameCounter += 1;
 
     try {
-      const maxSide = 256;
-      const srcW = video.videoWidth;
-      const srcH = video.videoHeight;
-      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
-      const w = Math.max(64, even(srcW * scale));
-      const h = Math.max(64, even(srcH * scale));
-      if (captureCanvas.width !== w) captureCanvas.width = w;
-      if (captureCanvas.height !== h) captureCanvas.height = h;
-      captureCtx.drawImage(video, 0, 0, w, h);
-
-      const result = await depthEstimator(captureCanvas);
-      if (result?.depth) {
-        await drawRawImageToDepthCanvas(result.depth);
-      } else if (result?.predicted_depth) {
-        normalizeDepthFromTensor(result.predicted_depth);
-      } else {
-        throw new Error("Depth model returned an unknown result.");
-      }
+      await updateDepthFromSource(video, video.videoWidth, video.videoHeight);
 
       renderNow();
-      if (exporting && exportRenderer) {
+      if (exporting && exportRenderer && !fastConversion) {
         exportRenderer.render(video, even(outW.num.value), even(outH.num.value), getSettings());
       }
     } catch (err) {
@@ -1078,6 +1092,161 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   }
 
   async function beginExport() {
+    if (!loadedFile || exporting) return;
+
+    const targetW = even(outW.num.value);
+    const targetH = even(outH.num.value);
+
+    if (targetW * targetH > 1920 * 1080) {
+      const okay = confirm("High-resolution phone export can use a lot of memory. Continue anyway?");
+      if (!okay) return;
+    }
+
+    if (useAi.checked && mode.value === "2d" && !aiLoaded) {
+      const okay = confirm("AI depth is enabled but the model is not loaded yet. Load it now?");
+      if (okay) await loadAiDepth();
+      if (!aiLoaded) return;
+    }
+
+    // WebCodecs is the key to faster-than-playback export. If this browser
+    // does not expose it, keep the old real-time recorder as a fallback.
+    if (!("VideoEncoder" in window) || !("VideoDecoder" in window)) {
+      setStatus("Fast export is not supported by this browser. Falling back to real-time export.");
+      return beginRealtimeExport();
+    }
+
+    let input = null;
+    let output = null;
+
+    try {
+      exporting = true;
+      exportCancelled = false;
+      fastConversion = null;
+      saveLink.classList.add("hidden");
+      if (exportObjectURL) {
+        URL.revokeObjectURL(exportObjectURL);
+        exportObjectURL = null;
+      }
+
+      exportBtn.disabled = true;
+      importBtn.disabled = true;
+      loadAiBtn.disabled = true;
+      cancelBtn.classList.remove("hidden");
+      progress.classList.remove("hidden");
+      progress.value = 0;
+      playBtn.disabled = true;
+      video.pause();
+      setStatus("Starting fast offline export…");
+
+      const MB = await getMediabunny();
+      const target = new MB.BufferTarget();
+      input = new MB.Input({
+        formats: MB.ALL_FORMATS,
+        source: new MB.BlobSource(loadedFile, { maxCacheSize: 8 * 1024 * 1024 })
+      });
+      output = new MB.Output({
+        format: new MB.Mp4OutputFormat(),
+        target
+      });
+
+      exportCanvas.width = targetW;
+      exportCanvas.height = targetH;
+      if (!exportRenderer) exportRenderer = new AnaglyphRenderer(exportCanvas, true);
+
+      const exportSettings = { ...getSettings() };
+      const fastUseAi = exportSettings.useDepth;
+      const depthStep = 1 / clamp(depthFps.num.value, 1, 6);
+      let nextDepthTime = -Infinity;
+      let aiFrameCanvas = null;
+      let aiFrameCtx = null;
+
+      fastConversion = await MB.Conversion.init({
+        input,
+        output,
+        tracks: "primary",
+        video: {
+          codec: "avc",
+          bitrate: 6_000_000,
+          hardwareAcceleration: "prefer-hardware",
+          forceTranscode: true,
+          processedWidth: targetW,
+          processedHeight: targetH,
+          process: async (sample) => {
+            if (exportCancelled) return null;
+
+            if (fastUseAi && sample.timestamp + 1e-6 >= nextDepthTime) {
+              const sw = Math.max(2, sample.displayWidth);
+              const sh = Math.max(2, sample.displayHeight);
+              if (!aiFrameCanvas) {
+                aiFrameCanvas = document.createElement("canvas");
+                aiFrameCtx = aiFrameCanvas.getContext("2d", { willReadFrequently: false });
+              }
+              if (aiFrameCanvas.width !== sw) aiFrameCanvas.width = sw;
+              if (aiFrameCanvas.height !== sh) aiFrameCanvas.height = sh;
+              aiFrameCtx.clearRect(0, 0, sw, sh);
+              sample.draw(aiFrameCtx, 0, 0);
+              await updateDepthFromSource(aiFrameCanvas, sw, sh);
+              nextDepthTime = sample.timestamp + depthStep;
+              exportRenderer.render(aiFrameCanvas, targetW, targetH, exportSettings);
+            } else {
+              // Use the decoded VideoFrame directly: no playback and no 2D canvas copy.
+              const source = sample.toCanvasImageSource();
+              exportRenderer.render(source, targetW, targetH, exportSettings);
+            }
+
+            return exportCanvas;
+          }
+        }
+      });
+
+      if (!fastConversion.isValid) {
+        throw new Error("This video's codec cannot be fast-exported on this device.");
+      }
+
+      const started = performance.now();
+      fastConversion.onProgress = (p, processedTime) => {
+        progress.value = Math.max(0, Math.min(1, p || 0));
+        const elapsed = Math.max(0.05, (performance.now() - started) / 1000);
+        const speed = Math.max(0, (processedTime || 0) / elapsed);
+        setStatus(`Fast export: ${Math.round((p || 0) * 100)}% • ${speed.toFixed(1)}× playback speed`);
+      };
+
+      await fastConversion.execute();
+      if (exportCancelled) return;
+
+      const buffer = target.buffer;
+      if (!buffer || !buffer.byteLength) throw new Error("The encoder produced an empty file.");
+
+      const blob = new Blob([buffer], { type: "video/mp4" });
+      exportObjectURL = URL.createObjectURL(blob);
+      const base = (loadedFile.name || "movie").replace(/\.[^.]+$/, "");
+      saveLink.href = exportObjectURL;
+      saveLink.download = `${base}_anaglyph.mp4`;
+      saveLink.classList.remove("hidden");
+      progress.value = 1;
+      setStatus("Fast export finished. Tap “Save exported video”.", "good");
+    } catch (err) {
+      console.error(err);
+      if (!exportCancelled) {
+        setStatus(`Fast export failed: ${String(err.message || err)}`, "danger");
+      }
+    } finally {
+      try { input?.dispose?.(); } catch {}
+      fastConversion = null;
+      exporting = false;
+      exportBtn.disabled = false;
+      importBtn.disabled = false;
+      loadAiBtn.disabled = false;
+      playBtn.disabled = !loadedFile;
+      cancelBtn.classList.add("hidden");
+      if (exportCancelled) {
+        progress.classList.add("hidden");
+        saveLink.classList.add("hidden");
+      }
+    }
+  }
+
+  async function beginRealtimeExport() {
     if (!loadedFile || exporting) return;
 
     if (!exportCanvas.captureStream || !window.MediaRecorder) {
@@ -1116,14 +1285,14 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       cancelBtn.classList.remove("hidden");
       progress.classList.remove("hidden");
       progress.value = 0;
-      setStatus("Preparing real-time export…");
+      setStatus("Preparing real-time fallback export…");
 
       video.pause();
       await waitForSeek(0);
 
       exportCanvas.width = targetW;
       exportCanvas.height = targetH;
-      if (!exportRenderer) exportRenderer = new AnaglyphRenderer(exportCanvas);
+      if (!exportRenderer) exportRenderer = new AnaglyphRenderer(exportCanvas, true);
 
       if (useAi.checked && mode.value === "2d" && aiLoaded) {
         await requestDepthUpdate(true);
@@ -1194,8 +1363,19 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
     }
   }
 
-  function stopExport(cancelled) {
+  async function stopExport(cancelled) {
     if (!exporting) return;
+
+    if (fastConversion) {
+      exportCancelled = !!cancelled;
+      try { await fastConversion.cancel(); } catch {}
+      if (cancelled) {
+        setStatus("Export cancelled.");
+        saveLink.classList.add("hidden");
+      }
+      return;
+    }
+
     video.pause();
     if (recorder && recorder.state !== "inactive") recorder.stop();
 
@@ -1205,6 +1385,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       exportBtn.disabled = false;
       importBtn.disabled = false;
       loadAiBtn.disabled = false;
+      playBtn.disabled = !loadedFile;
       cancelBtn.classList.add("hidden");
       progress.classList.add("hidden");
       setStatus("Export cancelled.");
