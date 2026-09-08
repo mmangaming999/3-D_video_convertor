@@ -1157,9 +1157,14 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       const fastUseAi = exportSettings.useDepth;
       const depthStep = 1 / clamp(depthFps.num.value, 1, 6);
       let nextDepthTime = -Infinity;
-      let aiFrameCanvas = null;
-      let aiFrameCtx = null;
+      // iPhone Safari is picky about passing VideoFrame/WebGL canvases directly
+      // between WebCodecs and WebGL. Use a normal 2D canvas as a compatibility
+      // bridge, then hand the encoder an ImageBitmap-backed VideoSample.
+      const frameCanvas = document.createElement("canvas");
+      const frameCtx = frameCanvas.getContext("2d", { alpha: false });
+      if (!frameCtx) throw new Error("Could not create the iPhone frame buffer.");
 
+      setStatus("Opening video and preparing the fast encoder…");
       fastConversion = await MB.Conversion.init({
         input,
         output,
@@ -1174,27 +1179,34 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
           process: async (sample) => {
             if (exportCancelled) return null;
 
+            const sw = Math.max(2, Math.round(sample.displayWidth));
+            const sh = Math.max(2, Math.round(sample.displayHeight));
+            if (frameCanvas.width !== sw) frameCanvas.width = sw;
+            if (frameCanvas.height !== sh) frameCanvas.height = sh;
+            frameCtx.clearRect(0, 0, sw, sh);
+            sample.draw(frameCtx, 0, 0, sw, sh);
+
             if (fastUseAi && sample.timestamp + 1e-6 >= nextDepthTime) {
-              const sw = Math.max(2, sample.displayWidth);
-              const sh = Math.max(2, sample.displayHeight);
-              if (!aiFrameCanvas) {
-                aiFrameCanvas = document.createElement("canvas");
-                aiFrameCtx = aiFrameCanvas.getContext("2d", { willReadFrequently: false });
-              }
-              if (aiFrameCanvas.width !== sw) aiFrameCanvas.width = sw;
-              if (aiFrameCanvas.height !== sh) aiFrameCanvas.height = sh;
-              aiFrameCtx.clearRect(0, 0, sw, sh);
-              sample.draw(aiFrameCtx, 0, 0);
-              await updateDepthFromSource(aiFrameCanvas, sw, sh);
+              await updateDepthFromSource(frameCanvas, sw, sh);
               nextDepthTime = sample.timestamp + depthStep;
-              exportRenderer.render(aiFrameCanvas, targetW, targetH, exportSettings);
-            } else {
-              // Use the decoded VideoFrame directly: no playback and no 2D canvas copy.
-              const source = sample.toCanvasImageSource();
-              exportRenderer.render(source, targetW, targetH, exportSettings);
             }
 
-            return exportCanvas;
+            exportRenderer.render(frameCanvas, targetW, targetH, exportSettings);
+
+            // Safari can reject an HTMLCanvasElement returned directly from an async
+            // processing callback. ImageBitmap is a well-supported CanvasImageSource.
+            if (typeof createImageBitmap !== "function") {
+              throw new Error("Fast export needs createImageBitmap on this iPhone/browser.");
+            }
+            const bitmap = await createImageBitmap(exportCanvas);
+            try {
+              return new MB.VideoSample(bitmap, {
+                timestamp: sample.timestamp,
+                duration: sample.duration
+              });
+            } finally {
+              if (typeof bitmap.close === "function") bitmap.close();
+            }
           }
         }
       });
@@ -1228,7 +1240,8 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
     } catch (err) {
       console.error(err);
       if (!exportCancelled) {
-        setStatus(`Fast export failed: ${String(err.message || err)}`, "danger");
+        const message = String(err.message || err);
+        setStatus(`Fast export failed: ${message}`, "danger");
       }
     } finally {
       try { input?.dispose?.(); } catch {}
