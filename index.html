@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#111827">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Anaglyph 3D">
+  <meta name="apple-mobile-web-app-title" content="Anaglyph 3D AI">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <title>Anaglyph 3D Video Converter</title>
+  <title>Anaglyph 3D AI Video Converter</title>
   <style>
     :root {
       color-scheme: dark;
@@ -21,6 +21,7 @@
       --border: #2a3543;
       --accent: #58a6ff;
       --danger: #ff6b6b;
+      --good: #6fe28b;
     }
     * { box-sizing: border-box; }
     body {
@@ -30,7 +31,7 @@
       color: var(--text);
       padding: max(12px, env(safe-area-inset-top)) 12px max(20px, env(safe-area-inset-bottom));
     }
-    .app { max-width: 980px; margin: 0 auto; }
+    .app { max-width: 1040px; margin: 0 auto; }
     h1 { font-size: 1.35rem; margin: 4px 0 12px; }
     .toolbar {
       display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
@@ -51,6 +52,7 @@
       justify-content: center;
     }
     button.primary { background: var(--accent); color: #06111f; border-color: transparent; }
+    button.secondary-good { background: rgba(111, 226, 139, 0.12); border-color: rgba(111, 226, 139, 0.5); color: var(--good); }
     button:disabled { opacity: .45; }
     #fileInput { display: none; }
     .file-name {
@@ -69,6 +71,7 @@
       aspect-ratio: 16 / 9;
       display: grid;
       place-items: center;
+      position: relative;
     }
     #previewCanvas {
       display: block;
@@ -76,6 +79,18 @@
       height: 100%;
       object-fit: contain;
       background: #000;
+    }
+    .ai-badge {
+      position: absolute;
+      right: 10px;
+      top: 10px;
+      background: rgba(0,0,0,.55);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 6px 9px;
+      border-radius: 999px;
+      font-size: .8rem;
+      backdrop-filter: blur(6px);
     }
     .timeline-row {
       display: grid;
@@ -136,7 +151,13 @@
     progress { width: 100%; height: 12px; margin-top: 8px; }
     .hidden { display: none !important; }
     .danger { color: var(--danger); }
+    .good { color: var(--good); }
     video { display: none; }
+    .check-row {
+      display: flex; align-items: center; gap: 10px; margin: 8px 0 10px;
+      color: var(--muted); font-size: .92rem;
+    }
+    .check-row input { width: 18px; height: 18px; }
     @media (max-width: 720px) {
       .grid { grid-template-columns: 1fr; }
       .row { grid-template-columns: 96px minmax(0,1fr) 76px; }
@@ -150,11 +171,12 @@
 </head>
 <body>
 <div class="app">
-  <h1>Anaglyph 3D Video Converter</h1>
+  <h1>Anaglyph 3D AI Video Converter</h1>
 
   <div class="toolbar">
     <input id="fileInput" type="file" accept="video/*">
     <button id="importBtn" class="primary" type="button">Import video</button>
+    <button id="loadAiBtn" class="secondary-good" type="button">Load AI depth</button>
     <button id="playBtn" type="button" disabled>▶ Play</button>
     <button id="exportBtn" type="button" disabled>Export</button>
     <button id="cancelBtn" type="button" class="hidden">Cancel</button>
@@ -163,6 +185,7 @@
 
   <div class="viewport">
     <canvas id="previewCanvas" width="960" height="540"></canvas>
+    <div id="aiBadge" class="ai-badge">AI depth: off</div>
   </div>
 
   <div class="timeline-row">
@@ -176,17 +199,41 @@
       <div class="row">
         <label for="mode">Input type</label>
         <select id="mode">
-          <option value="2d">Normal 2D → simulated anaglyph</option>
+          <option value="2d">Normal 2D → simulated / AI depth anaglyph</option>
           <option value="sbs_lr">Side-by-side: Left | Right</option>
           <option value="sbs_rl">Side-by-side: Right | Left</option>
         </select>
       </div>
       <div class="row">
-        <label for="gapRange">Pixel gap</label>
+        <label for="gapRange">Max gap</label>
         <input id="gapRange" type="range" min="0" max="80" value="6">
         <input id="gapNum" type="number" min="0" max="80" value="6">
       </div>
-      <p class="note">Your calibrated default is 6 px.</p>
+      <div class="check-row">
+        <input id="useAi" type="checkbox">
+        <label for="useAi">Use AI depth for 2D videos</label>
+      </div>
+      <p class="note">Your calibrated default is 6 px. AI depth uses this as the maximum shift for near objects.</p>
+    </section>
+
+    <section class="card">
+      <h2>AI depth tuning</h2>
+      <div class="row">
+        <label for="nearBoostRange">Near boost</label>
+        <input id="nearBoostRange" type="range" min="50" max="250" value="120">
+        <input id="nearBoostNum" type="number" min="50" max="250" value="120">
+      </div>
+      <div class="row">
+        <label for="smoothRange">Smoothing</label>
+        <input id="smoothRange" type="range" min="0" max="95" value="70">
+        <input id="smoothNum" type="number" min="0" max="95" value="70">
+      </div>
+      <div class="row">
+        <label for="depthFpsRange">Depth FPS</label>
+        <input id="depthFpsRange" type="range" min="1" max="6" value="3">
+        <input id="depthFpsNum" type="number" min="1" max="6" value="3">
+      </div>
+      <p class="note">First AI load downloads the model. On phones, 2–3 depth updates per second is usually best.</p>
     </section>
 
     <section class="card">
@@ -216,7 +263,7 @@
         <input id="heightRange" type="range" min="240" max="2160" step="2" value="720">
         <input id="heightNum" type="number" min="240" max="2160" step="2" value="720">
       </div>
-      <p class="note">720p is recommended for phone export. Preview is automatically rendered smaller for speed.</p>
+      <p class="note">720p is recommended for phone export. AI export is still real-time and can be heavy for long videos.</p>
     </section>
 
     <section class="card">
@@ -248,17 +295,28 @@
   <progress id="progress" class="hidden" max="1" value="0"></progress>
   <a id="saveLink" class="save-link hidden" href="#" download>Save exported video</a>
 
-  <video id="sourceVideo" playsinline preload="metadata"></video>
+  <video id="sourceVideo" playsinline preload="metadata" crossorigin="anonymous"></video>
   <canvas id="exportCanvas" class="hidden"></canvas>
+  <canvas id="captureCanvas" class="hidden" width="256" height="144"></canvas>
+  <canvas id="depthCanvas" class="hidden" width="256" height="144"></canvas>
 </div>
 
-<script>
+<script type="module">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+
 (() => {
   "use strict";
+
+  env.allowLocalModels = false;
+  if (env.backends?.onnx?.wasm) {
+    env.backends.onnx.wasm.numThreads = 1;
+    env.backends.onnx.wasm.proxy = false;
+  }
 
   const $ = id => document.getElementById(id);
   const fileInput = $("fileInput");
   const importBtn = $("importBtn");
+  const loadAiBtn = $("loadAiBtn");
   const playBtn = $("playBtn");
   const exportBtn = $("exportBtn");
   const cancelBtn = $("cancelBtn");
@@ -268,10 +326,14 @@
   const timeLabel = $("timeLabel");
   const previewCanvas = $("previewCanvas");
   const exportCanvas = $("exportCanvas");
+  const captureCanvas = $("captureCanvas");
+  const depthCanvas = $("depthCanvas");
   const status = $("status");
   const progress = $("progress");
   const saveLink = $("saveLink");
   const mode = $("mode");
+  const useAi = $("useAi");
+  const aiBadge = $("aiBadge");
 
   let fileURL = null;
   let loadedFile = null;
@@ -286,6 +348,17 @@
   let audioContext = null;
   let mediaSourceNode = null;
   let mediaDestNode = null;
+
+  let depthEstimator = null;
+  let aiLoading = false;
+  let aiLoaded = false;
+  let depthBusy = false;
+  let lastDepthMs = 0;
+  let lastRenderedVideoTime = -1;
+  let depthFrameCounter = 0;
+
+  const depthCtx = depthCanvas.getContext('2d', { willReadFrequently: true });
+  const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
 
   function clamp(v, lo, hi) {
     v = Number(v);
@@ -321,6 +394,9 @@
   const cropR = syncPair("cropRightRange", "cropRightNum", renderNow);
   const cropT = syncPair("cropTopRange", "cropTopNum", renderNow);
   const cropB = syncPair("cropBottomRange", "cropBottomNum", renderNow);
+  const nearBoost = syncPair("nearBoostRange", "nearBoostNum", renderNow);
+  const smooth = syncPair("smoothRange", "smoothNum", renderNow);
+  const depthFps = syncPair("depthFpsRange", "depthFpsNum", renderNow);
 
   function formatTime(sec) {
     if (!Number.isFinite(sec) || sec < 0) sec = 0;
@@ -331,6 +407,36 @@
     return h > 0
       ? `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
       : `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+  }
+
+  function setStatus(msg, kind="normal") {
+    if (kind === "danger") {
+      status.innerHTML = `<span class="danger">${msg}</span>`;
+    } else if (kind === "good") {
+      status.innerHTML = `<span class="good">${msg}</span>`;
+    } else {
+      status.textContent = msg;
+    }
+  }
+
+  function updateAiBadge() {
+    if (mode.value !== "2d") {
+      aiBadge.textContent = "AI depth: SBS mode";
+      return;
+    }
+    if (!useAi.checked) {
+      aiBadge.textContent = "AI depth: off";
+      return;
+    }
+    if (aiLoading) {
+      aiBadge.textContent = "AI depth: loading…";
+      return;
+    }
+    if (aiLoaded) {
+      aiBadge.textContent = "AI depth: on";
+      return;
+    }
+    aiBadge.textContent = "AI depth: not loaded";
   }
 
   class AnaglyphRenderer {
@@ -358,11 +464,14 @@
         precision mediump float;
         varying vec2 vUv;
         uniform sampler2D uVideo;
+        uniform sampler2D uDepth;
         uniform int uMode;
+        uniform int uUseDepth;
         uniform vec4 uCrop;
         uniform float uGap;
         uniform float uRedGain;
         uniform float uCyanGain;
+        uniform float uNearBoost;
 
         vec2 cropLocal(vec2 p) {
           return vec2(
@@ -386,8 +495,15 @@
           vec3 outColor;
 
           if (uMode == 0) {
-            vec2 rp = vec2(clamp(vUv.x + uGap, 0.0, 1.0), vUv.y);
-            vec2 cp = vec2(clamp(vUv.x - uGap, 0.0, 1.0), vUv.y);
+            float shift = uGap;
+            if (uUseDepth == 1) {
+              float d = texture2D(uDepth, cropLocal(vUv)).r;
+              d = pow(clamp(d, 0.0, 1.0), uNearBoost);
+              shift = uGap * d;
+            }
+
+            vec2 rp = vec2(clamp(vUv.x + shift, 0.0, 1.0), vUv.y);
+            vec2 cp = vec2(clamp(vUv.x - shift, 0.0, 1.0), vUv.y);
             vec3 rSample = texture2D(uVideo, cropLocal(rp)).rgb;
             vec3 cSample = texture2D(uVideo, cropLocal(cp)).rgb;
             outColor = vec3(
@@ -449,20 +565,33 @@
       gl.enableVertexAttribArray(aPos);
       gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
-      this.texture = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      this.videoTexture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      this.depthTexture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.depthTexture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
 
       this.locMode = gl.getUniformLocation(program, "uMode");
+      this.locUseDepth = gl.getUniformLocation(program, "uUseDepth");
       this.locCrop = gl.getUniformLocation(program, "uCrop");
       this.locGap = gl.getUniformLocation(program, "uGap");
       this.locRed = gl.getUniformLocation(program, "uRedGain");
       this.locCyan = gl.getUniformLocation(program, "uCyanGain");
+      this.locNearBoost = gl.getUniformLocation(program, "uNearBoost");
       gl.uniform1i(gl.getUniformLocation(program, "uVideo"), 0);
+      gl.uniform1i(gl.getUniformLocation(program, "uDepth"), 1);
+
+      this._depthInitialized = false;
     }
 
     render(videoEl, width, height, settings) {
@@ -478,14 +607,28 @@
       gl.useProgram(this.program);
 
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
       try {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoEl);
       } catch {
         return;
       }
 
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.depthTexture);
+      if (settings.useDepth) {
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, depthCanvas);
+          this._depthInitialized = true;
+        } catch {}
+      } else if (!this._depthInitialized) {
+        const flat = new Uint8Array([255, 255, 255, 255]);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat);
+        this._depthInitialized = true;
+      }
+
       gl.uniform1i(this.locMode, settings.mode);
+      gl.uniform1i(this.locUseDepth, settings.useDepth ? 1 : 0);
       gl.uniform4f(
         this.locCrop,
         settings.cropL,
@@ -496,6 +639,7 @@
       gl.uniform1f(this.locGap, settings.gapNorm);
       gl.uniform1f(this.locRed, settings.redGain);
       gl.uniform1f(this.locCyan, settings.cyanGain);
+      gl.uniform1f(this.locNearBoost, settings.nearBoost);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
@@ -513,13 +657,15 @@
 
     return {
       mode: selectedMode === "2d" ? 0 : selectedMode === "sbs_lr" ? 1 : 2,
+      useDepth: selectedMode === "2d" && useAi.checked && aiLoaded,
       cropL: eyeW ? l / eyeW : 0,
       cropR: eyeW ? r / eyeW : 0,
       cropT: eyeH ? t / eyeH : 0,
       cropB: eyeH ? b / eyeH : 0,
       gapNorm: clamp(gap.num.value, 0, 80) / Math.max(2, even(outW.num.value)),
       redGain: clamp(red.num.value, 0, 200) / 100,
-      cyanGain: clamp(cyan.num.value, 0, 200) / 100
+      cyanGain: clamp(cyan.num.value, 0, 200) / 100,
+      nearBoost: clamp(nearBoost.num.value, 50, 250) / 100
     };
   }
 
@@ -549,19 +695,21 @@
     const tick = () => {
       frameCallbackId = null;
       if (video.readyState >= 2) {
+        const settings = getSettings();
+
         if (exporting && exportRenderer) {
           exportRenderer.render(
             video,
             even(outW.num.value),
             even(outH.num.value),
-            getSettings()
+            settings
           );
-          const [pw, ph] = previewSize();
-          previewRenderer.render(video, pw, ph, getSettings());
-        } else {
-          renderNow();
         }
+
+        renderNow();
         updateTimeline();
+
+        maybeRunDepth();
       }
 
       if (!video.paused && !video.ended) requestFrame();
@@ -604,8 +752,24 @@
     outH.range.value = outH.num.value = maxH;
 
     gap.range.disabled = gap.num.disabled = mode.value !== "2d";
+    useAi.disabled = mode.value !== "2d";
     setCropRanges();
+    updateAiBadge();
     renderNow();
+  }
+
+  function chooseMimeType() {
+    const candidates = [
+      "video/mp4;codecs=h264,aac",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm"
+    ];
+    for (const type of candidates) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return "";
   }
 
   async function ensureAudioGraph() {
@@ -635,25 +799,238 @@
     });
   }
 
-  function chooseMimeType() {
-    const candidates = [
-      "video/mp4;codecs=h264,aac",
-      "video/mp4",
-      "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=vp8,opus",
-      "video/webm"
-    ];
-    for (const type of candidates) {
-      if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
+  function clearDepthCanvas() {
+    depthCanvas.width = depthCanvas.width;
+    const w = depthCanvas.width || 256;
+    const h = depthCanvas.height || 144;
+    const img = depthCtx.createImageData(w, h);
+    for (let i = 0; i < img.data.length; i += 4) {
+      img.data[i] = 255;
+      img.data[i+1] = 255;
+      img.data[i+2] = 255;
+      img.data[i+3] = 255;
     }
-    return "";
+    depthCtx.putImageData(img, 0, 0);
+  }
+
+  async function loadAiDepth(force = false) {
+    if (aiLoaded && !force) {
+      updateAiBadge();
+      setStatus("AI depth model is already loaded.", "good");
+      return;
+    }
+    if (aiLoading) return;
+    aiLoading = TrueIfPossible(true);
+    updateAiBadge();
+    loadAiBtn.disabled = true;
+    setStatus("Loading AI depth model… The first load can take a while on a phone.");
+
+    try {
+      depthEstimator = await pipeline(
+        'depth-estimation',
+        'Xenova/depth-anything-small-hf',
+        { quantized: true }
+      );
+      aiLoaded = true;
+      setStatus("AI depth model loaded. Turn on “Use AI depth for 2D videos”.", "good");
+    } catch (err1) {
+      try {
+        depthEstimator = await pipeline(
+          'depth-estimation',
+          'Xenova/dpt-hybrid-midas',
+          { quantized: true }
+        );
+        aiLoaded = true;
+        setStatus("AI depth model loaded (fallback model).", "good");
+      } catch (err2) {
+        console.error(err1, err2);
+        aiLoaded = false;
+        depthEstimator = null;
+        setStatus("AI model failed to load in this browser/device. Try again on Wi-Fi or use a different browser.", "danger");
+      }
+    } finally {
+      aiLoading = false;
+      loadAiBtn.disabled = false;
+      updateAiBadge();
+      renderNow();
+      if (aiLoaded && useAi.checked && video.videoWidth) {
+        requestDepthUpdate(true);
+      }
+    }
+  }
+
+  function TrueIfPossible(v) { return !!v; }
+
+  function normalizeDepthFromTensor(tensor) {
+    const dims = tensor.dims || tensor.shape || [];
+    const data = Array.from(tensor.data || []);
+    if (!data.length) throw new Error("Depth tensor was empty.");
+    let h = 0, w = 0;
+    if (dims.length >= 2) {
+      h = dims[dims.length - 2];
+      w = dims[dims.length - 1];
+    }
+    if (!w || !h) throw new Error("Unknown depth tensor shape.");
+
+    let minV = Infinity, maxV = -Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const v = Number(data[i]);
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    const span = Math.max(1e-6, maxV - minV);
+
+    depthCanvas.width = w;
+    depthCanvas.height = h;
+    const oldData = depthCtx.getImageData(0, 0, w, h);
+    const out = depthCtx.createImageData(w, h);
+    const smoothAmt = clamp(smooth.num.value, 0, 95) / 100;
+
+    for (let i = 0; i < data.length; i++) {
+      let v = (Number(data[i]) - minV) / span;
+      v = Math.max(0, Math.min(1, v));
+      const gray = Math.round(v * 255);
+      const j = i * 4;
+      const prev = oldData.data.length === out.data.length ? oldData.data[j] : gray;
+      const blended = Math.round(prev * smoothAmt + gray * (1 - smoothAmt));
+      out.data[j] = blended;
+      out.data[j+1] = blended;
+      out.data[j+2] = blended;
+      out.data[j+3] = 255;
+    }
+    depthCtx.putImageData(out, 0, 0);
+  }
+
+  async function drawRawImageToDepthCanvas(raw) {
+    if (!raw) throw new Error("No raw depth image.");
+    if (typeof raw.toCanvas === "function") {
+      const c = await raw.toCanvas();
+      depthCanvas.width = c.width;
+      depthCanvas.height = c.height;
+
+      const temp = document.createElement("canvas");
+      temp.width = c.width;
+      temp.height = c.height;
+      const tctx = temp.getContext("2d", { willReadFrequently: true });
+      tctx.drawImage(c, 0, 0);
+
+      const img = tctx.getImageData(0, 0, temp.width, temp.height);
+      const oldData = depthCtx.getImageData(0, 0, depthCanvas.width, depthCanvas.height);
+      const smoothAmt = clamp(smooth.num.value, 0, 95) / 100;
+
+      for (let i = 0; i < img.data.length; i += 4) {
+        const gray = img.data[i];
+        const prev = oldData.data.length === img.data.length ? oldData.data[i] : gray;
+        const blended = Math.round(prev * smoothAmt + gray * (1 - smoothAmt));
+        img.data[i] = blended;
+        img.data[i+1] = blended;
+        img.data[i+2] = blended;
+        img.data[i+3] = 255;
+      }
+      depthCtx.putImageData(img, 0, 0);
+      return;
+    }
+
+    if (raw.data && raw.width && raw.height) {
+      depthCanvas.width = raw.width;
+      depthCanvas.height = raw.height;
+      const img = depthCtx.createImageData(raw.width, raw.height);
+      const oldData = depthCtx.getImageData(0, 0, raw.width, raw.height);
+      const smoothAmt = clamp(smooth.num.value, 0, 95) / 100;
+
+      const n = raw.width * raw.height;
+      if (raw.data.length === n) {
+        for (let i = 0; i < n; i++) {
+          const gray = raw.data[i];
+          const j = i * 4;
+          const prev = oldData.data.length === img.data.length ? oldData.data[j] : gray;
+          const blended = Math.round(prev * smoothAmt + gray * (1 - smoothAmt));
+          img.data[j] = blended;
+          img.data[j+1] = blended;
+          img.data[j+2] = blended;
+          img.data[j+3] = 255;
+        }
+      } else if (raw.data.length === n * 4) {
+        for (let i = 0; i < n; i++) {
+          const j = i * 4;
+          const gray = raw.data[j];
+          const prev = oldData.data.length === img.data.length ? oldData.data[j] : gray;
+          const blended = Math.round(prev * smoothAmt + gray * (1 - smoothAmt));
+          img.data[j] = blended;
+          img.data[j+1] = blended;
+          img.data[j+2] = blended;
+          img.data[j+3] = 255;
+        }
+      } else {
+        throw new Error("Unsupported raw depth image layout.");
+      }
+      depthCtx.putImageData(img, 0, 0);
+      return;
+    }
+
+    throw new Error("Unknown depth output format.");
+  }
+
+  async function requestDepthUpdate(force = false) {
+    if (!useAi.checked || mode.value !== "2d") return;
+    if (!aiLoaded || !depthEstimator || !video.videoWidth || video.readyState < 2) return;
+    if (depthBusy) return;
+
+    const now = performance.now();
+    const targetInterval = 1000 / clamp(depthFps.num.value, 1, 6);
+    if (!force && (now - lastDepthMs) < targetInterval) return;
+
+    const t = video.currentTime || 0;
+    if (!force && Math.abs(t - lastRenderedVideoTime) < 0.001) return;
+
+    depthBusy = true;
+    lastDepthMs = now;
+    lastRenderedVideoTime = t;
+    depthFrameCounter += 1;
+
+    try {
+      const maxSide = 256;
+      const srcW = video.videoWidth;
+      const srcH = video.videoHeight;
+      const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+      const w = Math.max(64, even(srcW * scale));
+      const h = Math.max(64, even(srcH * scale));
+      if (captureCanvas.width !== w) captureCanvas.width = w;
+      if (captureCanvas.height !== h) captureCanvas.height = h;
+      captureCtx.drawImage(video, 0, 0, w, h);
+
+      const result = await depthEstimator(captureCanvas);
+      if (result?.depth) {
+        await drawRawImageToDepthCanvas(result.depth);
+      } else if (result?.predicted_depth) {
+        normalizeDepthFromTensor(result.predicted_depth);
+      } else {
+        throw new Error("Depth model returned an unknown result.");
+      }
+
+      renderNow();
+      if (exporting && exportRenderer) {
+        exportRenderer.render(video, even(outW.num.value), even(outH.num.value), getSettings());
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus("AI depth estimation hit an error. You can continue in normal mode or try reloading the model.", "danger");
+    } finally {
+      depthBusy = false;
+    }
+  }
+
+  function maybeRunDepth() {
+    if (useAi.checked && mode.value === "2d" && aiLoaded) {
+      requestDepthUpdate(false);
+    }
   }
 
   async function beginExport() {
     if (!loadedFile || exporting) return;
 
     if (!exportCanvas.captureStream || !window.MediaRecorder) {
-      status.innerHTML = '<span class="danger">This browser cannot record the processed canvas.</span>';
+      setStatus("This browser cannot record the processed canvas.", "danger");
       return;
     }
 
@@ -663,6 +1040,14 @@
     if (targetW * targetH > 1920 * 1080) {
       const okay = confirm("High-resolution phone export can be very demanding. Continue anyway?");
       if (!okay) return;
+    }
+
+    if (useAi.checked && mode.value === "2d" && !aiLoaded) {
+      const okay = confirm("AI depth is enabled but the model is not loaded yet. Load it now?");
+      if (okay) {
+        await loadAiDepth();
+      }
+      if (!aiLoaded) return;
     }
 
     try {
@@ -676,10 +1061,11 @@
 
       exportBtn.disabled = true;
       importBtn.disabled = true;
+      loadAiBtn.disabled = true;
       cancelBtn.classList.remove("hidden");
       progress.classList.remove("hidden");
       progress.value = 0;
-      status.textContent = "Preparing real-time export…";
+      setStatus("Preparing real-time export…");
 
       video.pause();
       await waitForSeek(0);
@@ -688,6 +1074,9 @@
       exportCanvas.height = targetH;
       if (!exportRenderer) exportRenderer = new AnaglyphRenderer(exportCanvas);
 
+      if (useAi.checked && mode.value === "2d" && aiLoaded) {
+        await requestDepthUpdate(true);
+      }
       exportRenderer.render(video, targetW, targetH, getSettings());
 
       const stream = exportCanvas.captureStream(30);
@@ -712,7 +1101,7 @@
 
       recorder.onerror = ev => {
         console.error(ev);
-        status.innerHTML = '<span class="danger">Export recorder error.</span>';
+        setStatus("Export recorder error.", "danger");
       };
 
       recorder.onstop = () => {
@@ -729,14 +1118,15 @@
         exporting = false;
         exportBtn.disabled = false;
         importBtn.disabled = false;
+        loadAiBtn.disabled = false;
         cancelBtn.classList.add("hidden");
         progress.classList.add("hidden");
-        status.textContent = "Export finished. Tap “Save exported video”.";
+        setStatus("Export finished. Tap “Save exported video”.", "good");
         playBtn.textContent = "▶ Play";
       };
 
       recorder.start(1000);
-      status.textContent = "Exporting in real time. Keep this app open until it finishes.";
+      setStatus("Exporting in real time. Keep this app open until it finishes.");
       await video.play();
       playBtn.textContent = "⏸ Pause";
       scheduleFrames();
@@ -746,9 +1136,10 @@
       exporting = false;
       exportBtn.disabled = false;
       importBtn.disabled = false;
+      loadAiBtn.disabled = false;
       cancelBtn.classList.add("hidden");
       progress.classList.add("hidden");
-      status.innerHTML = `<span class="danger">Export failed: ${String(err.message || err)}</span>`;
+      setStatus(`Export failed: ${String(err.message || err)}`, "danger");
     }
   }
 
@@ -759,11 +1150,18 @@
 
     if (cancelled) {
       chunks = [];
-      status.textContent = "Export cancelled.";
+      exporting = false;
+      exportBtn.disabled = false;
+      importBtn.disabled = false;
+      loadAiBtn.disabled = false;
+      cancelBtn.classList.add("hidden");
+      progress.classList.add("hidden");
+      setStatus("Export cancelled.");
     }
   }
 
   importBtn.addEventListener("click", () => fileInput.click());
+  loadAiBtn.addEventListener("click", () => loadAiDepth());
 
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
@@ -776,7 +1174,7 @@
     video.load();
 
     fileName.textContent = file.name;
-    status.textContent = "Loading video…";
+    setStatus("Loading video…");
     saveLink.classList.add("hidden");
   });
 
@@ -784,7 +1182,7 @@
     try {
       if (!previewRenderer) previewRenderer = new AnaglyphRenderer(previewCanvas);
     } catch (err) {
-      status.innerHTML = `<span class="danger">${String(err.message || err)}</span>`;
+      setStatus(String(err.message || err), "danger");
       return;
     }
 
@@ -793,6 +1191,8 @@
     exportBtn.disabled = false;
 
     mode.value = "2d";
+    useAi.checked = false;
+    updateAiBadge();
     setCropRanges();
 
     cropL.range.value = cropL.num.value = 0;
@@ -800,18 +1200,25 @@
     cropT.range.value = cropT.num.value = 0;
     cropB.range.value = cropB.num.value = 0;
 
-    // Keep phone-friendly defaults unless the source is smaller.
     const defaultW = Math.min(1280, even(video.videoWidth));
     const defaultH = Math.min(720, even(video.videoHeight));
     outW.range.value = outW.num.value = Math.max(320, defaultW);
     outH.range.value = outH.num.value = Math.max(240, defaultH);
 
+    clearDepthCanvas();
     timeLabel.textContent = `00:00 / ${formatTime(video.duration)}`;
-    status.textContent = `${video.videoWidth}×${video.videoHeight} • ${formatTime(video.duration)} loaded.`;
+    setStatus(`${video.videoWidth}×${video.videoHeight} • ${formatTime(video.duration)} loaded.`);
   });
 
-  video.addEventListener("loadeddata", renderNow);
-  video.addEventListener("seeked", () => {
+  video.addEventListener("loadeddata", () => {
+    renderNow();
+    if (useAi.checked && aiLoaded) requestDepthUpdate(true);
+  });
+
+  video.addEventListener("seeked", async () => {
+    if (useAi.checked && aiLoaded && mode.value === "2d") {
+      await requestDepthUpdate(true);
+    }
     renderNow();
     updateTimeline();
   });
@@ -837,9 +1244,10 @@
     if (!loadedFile || exporting) return;
     if (video.paused || video.ended) {
       if (video.ended) video.currentTime = 0;
-      try {
-        await ensureAudioGraph();
-      } catch {}
+      try { await ensureAudioGraph(); } catch {}
+      if (useAi.checked && !aiLoaded) {
+        await loadAiDepth();
+      }
       await video.play();
     } else {
       video.pause();
@@ -851,7 +1259,21 @@
     video.currentTime = (Number(timeline.value) / 1000) * video.duration;
   });
 
-  mode.addEventListener("change", resetOutputForMode);
+  mode.addEventListener("change", () => {
+    resetOutputForMode();
+  });
+
+  useAi.addEventListener("change", async () => {
+    updateAiBadge();
+    if (useAi.checked && !aiLoaded) {
+      await loadAiDepth();
+    }
+    if (useAi.checked && aiLoaded && video.videoWidth) {
+      await requestDepthUpdate(true);
+    }
+    renderNow();
+  });
+
   exportBtn.addEventListener("click", beginExport);
   cancelBtn.addEventListener("click", () => stopExport(true));
 
@@ -859,6 +1281,9 @@
     if (fileURL) URL.revokeObjectURL(fileURL);
     if (exportObjectURL) URL.revokeObjectURL(exportObjectURL);
   });
+
+  clearDepthCanvas();
+  updateAiBadge();
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
