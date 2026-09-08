@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Anaglyph 3D">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <title>Anaglyph 3D Video Converter</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f16;
+      --panel: #141b25;
+      --panel2: #0f151e;
+      --text: #eef3f8;
+      --muted: #9eabb9;
+      --border: #2a3543;
+      --accent: #58a6ff;
+      --danger: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: max(12px, env(safe-area-inset-top)) 12px max(20px, env(safe-area-inset-bottom));
+    }
+    .app { max-width: 980px; margin: 0 auto; }
+    h1 { font-size: 1.35rem; margin: 4px 0 12px; }
+    .toolbar {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+      margin-bottom: 10px;
+    }
+    button, .save-link {
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 10px 14px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    button.primary { background: var(--accent); color: #06111f; border-color: transparent; }
+    button:disabled { opacity: .45; }
+    #fileInput { display: none; }
+    .file-name {
+      color: var(--muted);
+      font-size: .9rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1 1 180px;
+    }
+    .viewport {
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
+      display: grid;
+      place-items: center;
+    }
+    #previewCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+    .timeline-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      margin: 10px 0 14px;
+    }
+    .time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .9rem; }
+    input[type="range"] { width: 100%; min-height: 34px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      min-width: 0;
+    }
+    .card h2 {
+      font-size: 1rem;
+      margin: 0 0 10px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 110px minmax(0,1fr) 82px;
+      gap: 8px;
+      align-items: center;
+      margin: 9px 0;
+    }
+    .row label { color: var(--muted); font-size: .9rem; }
+    input[type="number"], select {
+      width: 100%;
+      min-height: 42px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel2);
+      color: var(--text);
+      font-size: 16px;
+      padding: 7px 8px;
+    }
+    select { grid-column: 2 / 4; }
+    .note, .status {
+      color: var(--muted);
+      font-size: .88rem;
+      line-height: 1.35;
+    }
+    .status {
+      margin-top: 10px;
+      padding: 9px 10px;
+      border-radius: 9px;
+      background: var(--panel2);
+      border: 1px solid var(--border);
+    }
+    progress { width: 100%; height: 12px; margin-top: 8px; }
+    .hidden { display: none !important; }
+    .danger { color: var(--danger); }
+    video { display: none; }
+    @media (max-width: 720px) {
+      .grid { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 96px minmax(0,1fr) 76px; }
+      h1 { font-size: 1.15rem; }
+    }
+    @media (max-width: 390px) {
+      .row { grid-template-columns: 86px minmax(0,1fr) 72px; gap: 6px; }
+      button, .save-link { padding: 9px 11px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <h1>Anaglyph 3D Video Converter</h1>
+
+  <div class="toolbar">
+    <input id="fileInput" type="file" accept="video/*">
+    <button id="importBtn" class="primary" type="button">Import video</button>
+    <button id="playBtn" type="button" disabled>▶ Play</button>
+    <button id="exportBtn" type="button" disabled>Export</button>
+    <button id="cancelBtn" type="button" class="hidden">Cancel</button>
+    <span id="fileName" class="file-name">No video loaded</span>
+  </div>
+
+  <div class="viewport">
+    <canvas id="previewCanvas" width="960" height="540"></canvas>
+  </div>
+
+  <div class="timeline-row">
+    <input id="timeline" type="range" min="0" max="1000" value="0" disabled aria-label="Video position">
+    <span id="timeLabel" class="time">00:00 / 00:00</span>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>3D</h2>
+      <div class="row">
+        <label for="mode">Input type</label>
+        <select id="mode">
+          <option value="2d">Normal 2D → simulated anaglyph</option>
+          <option value="sbs_lr">Side-by-side: Left | Right</option>
+          <option value="sbs_rl">Side-by-side: Right | Left</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="gapRange">Pixel gap</label>
+        <input id="gapRange" type="range" min="0" max="80" value="6">
+        <input id="gapNum" type="number" min="0" max="80" value="6">
+      </div>
+      <p class="note">Your calibrated default is 6 px.</p>
+    </section>
+
+    <section class="card">
+      <h2>Lens brightness</h2>
+      <div class="row">
+        <label for="redRange">Red</label>
+        <input id="redRange" type="range" min="0" max="200" value="159">
+        <input id="redNum" type="number" min="0" max="200" value="159">
+      </div>
+      <div class="row">
+        <label for="cyanRange">Cyan</label>
+        <input id="cyanRange" type="range" min="0" max="200" value="100">
+        <input id="cyanNum" type="number" min="0" max="200" value="100">
+      </div>
+      <p class="note">Red 159% / Cyan 100% is loaded as your starting calibration.</p>
+    </section>
+
+    <section class="card">
+      <h2>Output size</h2>
+      <div class="row">
+        <label for="widthRange">Width</label>
+        <input id="widthRange" type="range" min="320" max="3840" step="2" value="1280">
+        <input id="widthNum" type="number" min="320" max="3840" step="2" value="1280">
+      </div>
+      <div class="row">
+        <label for="heightRange">Height</label>
+        <input id="heightRange" type="range" min="240" max="2160" step="2" value="720">
+        <input id="heightNum" type="number" min="240" max="2160" step="2" value="720">
+      </div>
+      <p class="note">720p is recommended for phone export. Preview is automatically rendered smaller for speed.</p>
+    </section>
+
+    <section class="card">
+      <h2>Crop</h2>
+      <div class="row">
+        <label for="cropLeftRange">Left</label>
+        <input id="cropLeftRange" type="range" min="0" max="100" value="0">
+        <input id="cropLeftNum" type="number" min="0" max="100" value="0">
+      </div>
+      <div class="row">
+        <label for="cropRightRange">Right</label>
+        <input id="cropRightRange" type="range" min="0" max="100" value="0">
+        <input id="cropRightNum" type="number" min="0" max="100" value="0">
+      </div>
+      <div class="row">
+        <label for="cropTopRange">Top</label>
+        <input id="cropTopRange" type="range" min="0" max="100" value="0">
+        <input id="cropTopNum" type="number" min="0" max="100" value="0">
+      </div>
+      <div class="row">
+        <label for="cropBottomRange">Bottom</label>
+        <input id="cropBottomRange" type="range" min="0" max="100" value="0">
+        <input id="cropBottomNum" type="number" min="0" max="100" value="0">
+      </div>
+    </section>
+  </div>
+
+  <div id="status" class="status">Import a video to begin.</div>
+  <progress id="progress" class="hidden" max="1" value="0"></progress>
+  <a id="saveLink" class="save-link hidden" href="#" download>Save exported video</a>
+
+  <video id="sourceVideo" playsinline preload="metadata"></video>
+  <canvas id="exportCanvas" class="hidden"></canvas>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = id => document.getElementById(id);
+  const fileInput = $("fileInput");
+  const importBtn = $("importBtn");
+  const playBtn = $("playBtn");
+  const exportBtn = $("exportBtn");
+  const cancelBtn = $("cancelBtn");
+  const fileName = $("fileName");
+  const video = $("sourceVideo");
+  const timeline = $("timeline");
+  const timeLabel = $("timeLabel");
+  const previewCanvas = $("previewCanvas");
+  const exportCanvas = $("exportCanvas");
+  const status = $("status");
+  const progress = $("progress");
+  const saveLink = $("saveLink");
+  const mode = $("mode");
+
+  let fileURL = null;
+  let loadedFile = null;
+  let previewRenderer = null;
+  let exportRenderer = null;
+  let frameCallbackId = null;
+  let exporting = false;
+  let recorder = null;
+  let chunks = [];
+  let exportObjectURL = null;
+
+  let audioContext = null;
+  let mediaSourceNode = null;
+  let mediaDestNode = null;
+
+  function clamp(v, lo, hi) {
+    v = Number(v);
+    if (!Number.isFinite(v)) v = lo;
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function even(v) {
+    v = Math.max(2, Math.round(Number(v) || 2));
+    return v % 2 ? v - 1 : v;
+  }
+
+  function syncPair(rangeId, numId, onChange) {
+    const r = $(rangeId), n = $(numId);
+    const apply = (source, target) => {
+      let v = clamp(source.value, Number(source.min), Number(source.max));
+      if (source.step && Number(source.step) === 2) v = even(v);
+      source.value = v;
+      target.value = v;
+      onChange?.();
+    };
+    r.addEventListener("input", () => apply(r, n));
+    n.addEventListener("input", () => apply(n, r));
+    return { range: r, num: n };
+  }
+
+  const gap = syncPair("gapRange", "gapNum", renderNow);
+  const red = syncPair("redRange", "redNum", renderNow);
+  const cyan = syncPair("cyanRange", "cyanNum", renderNow);
+  const outW = syncPair("widthRange", "widthNum", renderNow);
+  const outH = syncPair("heightRange", "heightNum", renderNow);
+  const cropL = syncPair("cropLeftRange", "cropLeftNum", renderNow);
+  const cropR = syncPair("cropRightRange", "cropRightNum", renderNow);
+  const cropT = syncPair("cropTopRange", "cropTopNum", renderNow);
+  const cropB = syncPair("cropBottomRange", "cropBottomNum", renderNow);
+
+  function formatTime(sec) {
+    if (!Number.isFinite(sec) || sec < 0) sec = 0;
+    sec = Math.floor(sec);
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    return h > 0
+      ? `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+      : `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+  }
+
+  class AnaglyphRenderer {
+    constructor(canvas) {
+      this.canvas = canvas;
+      const gl = canvas.getContext("webgl", {
+        alpha: false,
+        antialias: false,
+        preserveDrawingBuffer: false,
+        powerPreference: "high-performance"
+      });
+      if (!gl) throw new Error("WebGL is not available on this device.");
+      this.gl = gl;
+
+      const vs = `
+        attribute vec2 aPos;
+        varying vec2 vUv;
+        void main() {
+          vUv = (aPos + 1.0) * 0.5;
+          gl_Position = vec4(aPos, 0.0, 1.0);
+        }
+      `;
+
+      const fs = `
+        precision mediump float;
+        varying vec2 vUv;
+        uniform sampler2D uVideo;
+        uniform int uMode;
+        uniform vec4 uCrop;
+        uniform float uGap;
+        uniform float uRedGain;
+        uniform float uCyanGain;
+
+        vec2 cropLocal(vec2 p) {
+          return vec2(
+            mix(uCrop.x, 1.0 - uCrop.y, p.x),
+            mix(uCrop.z, 1.0 - uCrop.w, p.y)
+          );
+        }
+
+        vec3 sampleEye(vec2 localP, bool rightEye) {
+          vec2 p = cropLocal(localP);
+          float x;
+          if (uMode == 1) {
+            x = rightEye ? 0.5 + p.x * 0.5 : p.x * 0.5;
+          } else {
+            x = rightEye ? p.x * 0.5 : 0.5 + p.x * 0.5;
+          }
+          return texture2D(uVideo, vec2(x, p.y)).rgb;
+        }
+
+        void main() {
+          vec3 outColor;
+
+          if (uMode == 0) {
+            vec2 rp = vec2(clamp(vUv.x + uGap, 0.0, 1.0), vUv.y);
+            vec2 cp = vec2(clamp(vUv.x - uGap, 0.0, 1.0), vUv.y);
+            vec3 rSample = texture2D(uVideo, cropLocal(rp)).rgb;
+            vec3 cSample = texture2D(uVideo, cropLocal(cp)).rgb;
+            outColor = vec3(
+              rSample.r * uRedGain,
+              cSample.g * uCyanGain,
+              cSample.b * uCyanGain
+            );
+          } else {
+            vec3 L = sampleEye(vUv, false);
+            vec3 R = sampleEye(vUv, true);
+
+            vec3 d;
+            d.r =  0.437*L.r + 0.449*L.g + 0.164*L.b
+                 - 0.011*R.r - 0.032*R.g - 0.007*R.b;
+            d.g = -0.062*L.r - 0.062*L.g - 0.024*L.b
+                 + 0.377*R.r + 0.761*R.g + 0.009*R.b;
+            d.b = -0.048*L.r - 0.050*L.g - 0.017*L.b
+                 - 0.026*R.r - 0.093*R.g + 1.234*R.b;
+
+            outColor = vec3(
+              d.r * uRedGain,
+              d.g * uCyanGain,
+              d.b * uCyanGain
+            );
+          }
+
+          gl_FragColor = vec4(clamp(outColor, 0.0, 1.0), 1.0);
+        }
+      `;
+
+      const compile = (type, source) => {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, source);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(sh) || "Shader compile error");
+        }
+        return sh;
+      };
+
+      const program = gl.createProgram();
+      gl.attachShader(program, compile(gl.VERTEX_SHADER, vs));
+      gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(program) || "WebGL program link error");
+      }
+      this.program = program;
+      gl.useProgram(program);
+
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),
+        gl.STATIC_DRAW
+      );
+      const aPos = gl.getAttribLocation(program, "aPos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+      this.texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+      this.locMode = gl.getUniformLocation(program, "uMode");
+      this.locCrop = gl.getUniformLocation(program, "uCrop");
+      this.locGap = gl.getUniformLocation(program, "uGap");
+      this.locRed = gl.getUniformLocation(program, "uRedGain");
+      this.locCyan = gl.getUniformLocation(program, "uCyanGain");
+      gl.uniform1i(gl.getUniformLocation(program, "uVideo"), 0);
+    }
+
+    render(videoEl, width, height, settings) {
+      if (!videoEl.videoWidth || videoEl.readyState < 2) return;
+      width = Math.max(2, even(width));
+      height = Math.max(2, even(height));
+
+      if (this.canvas.width !== width) this.canvas.width = width;
+      if (this.canvas.height !== height) this.canvas.height = height;
+
+      const gl = this.gl;
+      gl.viewport(0, 0, width, height);
+      gl.useProgram(this.program);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      try {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoEl);
+      } catch {
+        return;
+      }
+
+      gl.uniform1i(this.locMode, settings.mode);
+      gl.uniform4f(
+        this.locCrop,
+        settings.cropL,
+        settings.cropR,
+        settings.cropT,
+        settings.cropB
+      );
+      gl.uniform1f(this.locGap, settings.gapNorm);
+      gl.uniform1f(this.locRed, settings.redGain);
+      gl.uniform1f(this.locCyan, settings.cyanGain);
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+  }
+
+  function getSettings() {
+    const selectedMode = mode.value;
+    const eyeW = selectedMode === "2d" ? video.videoWidth : Math.floor(video.videoWidth / 2);
+    const eyeH = video.videoHeight;
+
+    const l = clamp(cropL.num.value, 0, Math.max(0, eyeW - 2));
+    const r = clamp(cropR.num.value, 0, Math.max(0, eyeW - l - 2));
+    const t = clamp(cropT.num.value, 0, Math.max(0, eyeH - 2));
+    const b = clamp(cropB.num.value, 0, Math.max(0, eyeH - t - 2));
+
+    return {
+      mode: selectedMode === "2d" ? 0 : selectedMode === "sbs_lr" ? 1 : 2,
+      cropL: eyeW ? l / eyeW : 0,
+      cropR: eyeW ? r / eyeW : 0,
+      cropT: eyeH ? t / eyeH : 0,
+      cropB: eyeH ? b / eyeH : 0,
+      gapNorm: clamp(gap.num.value, 0, 80) / Math.max(2, even(outW.num.value)),
+      redGain: clamp(red.num.value, 0, 200) / 100,
+      cyanGain: clamp(cyan.num.value, 0, 200) / 100
+    };
+  }
+
+  function previewSize() {
+    const w = Math.max(2, even(outW.num.value));
+    const h = Math.max(2, even(outH.num.value));
+    const scale = Math.min(1, 960 / w, 540 / h);
+    return [Math.max(2, even(w * scale)), Math.max(2, even(h * scale))];
+  }
+
+  function renderNow() {
+    if (!previewRenderer || !video.videoWidth || video.readyState < 2) return;
+    const [w, h] = previewSize();
+    previewRenderer.render(video, w, h, getSettings());
+  }
+
+  function updateTimeline() {
+    if (!video.duration || !Number.isFinite(video.duration)) return;
+    timeline.value = Math.round((video.currentTime / video.duration) * 1000);
+    timeLabel.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+    if (exporting) progress.value = video.currentTime / video.duration;
+  }
+
+  function scheduleFrames() {
+    if (frameCallbackId !== null) return;
+
+    const tick = () => {
+      frameCallbackId = null;
+      if (video.readyState >= 2) {
+        if (exporting && exportRenderer) {
+          exportRenderer.render(
+            video,
+            even(outW.num.value),
+            even(outH.num.value),
+            getSettings()
+          );
+          const [pw, ph] = previewSize();
+          previewRenderer.render(video, pw, ph, getSettings());
+        } else {
+          renderNow();
+        }
+        updateTimeline();
+      }
+
+      if (!video.paused && !video.ended) requestFrame();
+    };
+
+    function requestFrame() {
+      if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
+        frameCallbackId = video.requestVideoFrameCallback(tick);
+      } else {
+        frameCallbackId = requestAnimationFrame(tick);
+      }
+    }
+
+    requestFrame();
+  }
+
+  function setCropRanges() {
+    if (!video.videoWidth) return;
+    const eyeW = mode.value === "2d" ? video.videoWidth : Math.floor(video.videoWidth / 2);
+    const eyeH = video.videoHeight;
+
+    for (const pair of [cropL, cropR]) {
+      pair.range.max = Math.max(0, eyeW - 2);
+      pair.num.max = Math.max(0, eyeW - 2);
+    }
+    for (const pair of [cropT, cropB]) {
+      pair.range.max = Math.max(0, eyeH - 2);
+      pair.num.max = Math.max(0, eyeH - 2);
+    }
+  }
+
+  function resetOutputForMode() {
+    if (!video.videoWidth) return;
+    const w = mode.value === "2d" ? video.videoWidth : Math.floor(video.videoWidth / 2);
+    const h = video.videoHeight;
+    const maxW = Math.min(3840, Math.max(320, even(w)));
+    const maxH = Math.min(2160, Math.max(240, even(h)));
+
+    outW.range.value = outW.num.value = maxW;
+    outH.range.value = outH.num.value = maxH;
+
+    gap.range.disabled = gap.num.disabled = mode.value !== "2d";
+    setCropRanges();
+    renderNow();
+  }
+
+  async function ensureAudioGraph() {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+
+    if (!audioContext) {
+      audioContext = new AudioCtx();
+      mediaSourceNode = audioContext.createMediaElementSource(video);
+      mediaDestNode = audioContext.createMediaStreamDestination();
+      mediaSourceNode.connect(audioContext.destination);
+      mediaSourceNode.connect(mediaDestNode);
+    }
+    if (audioContext.state === "suspended") await audioContext.resume();
+    return mediaDestNode;
+  }
+
+  function waitForSeek(time) {
+    return new Promise(resolve => {
+      if (Math.abs(video.currentTime - time) < 0.02) return resolve();
+      const done = () => {
+        video.removeEventListener("seeked", done);
+        resolve();
+      };
+      video.addEventListener("seeked", done, { once: true });
+      video.currentTime = time;
+    });
+  }
+
+  function chooseMimeType() {
+    const candidates = [
+      "video/mp4;codecs=h264,aac",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm"
+    ];
+    for (const type of candidates) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return "";
+  }
+
+  async function beginExport() {
+    if (!loadedFile || exporting) return;
+
+    if (!exportCanvas.captureStream || !window.MediaRecorder) {
+      status.innerHTML = '<span class="danger">This browser cannot record the processed canvas.</span>';
+      return;
+    }
+
+    const targetW = even(outW.num.value);
+    const targetH = even(outH.num.value);
+
+    if (targetW * targetH > 1920 * 1080) {
+      const okay = confirm("High-resolution phone export can be very demanding. Continue anyway?");
+      if (!okay) return;
+    }
+
+    try {
+      exporting = true;
+      chunks = [];
+      saveLink.classList.add("hidden");
+      if (exportObjectURL) {
+        URL.revokeObjectURL(exportObjectURL);
+        exportObjectURL = null;
+      }
+
+      exportBtn.disabled = true;
+      importBtn.disabled = true;
+      cancelBtn.classList.remove("hidden");
+      progress.classList.remove("hidden");
+      progress.value = 0;
+      status.textContent = "Preparing real-time export…";
+
+      video.pause();
+      await waitForSeek(0);
+
+      exportCanvas.width = targetW;
+      exportCanvas.height = targetH;
+      if (!exportRenderer) exportRenderer = new AnaglyphRenderer(exportCanvas);
+
+      exportRenderer.render(video, targetW, targetH, getSettings());
+
+      const stream = exportCanvas.captureStream(30);
+
+      try {
+        const audioDest = await ensureAudioGraph();
+        if (audioDest) {
+          for (const track of audioDest.stream.getAudioTracks()) stream.addTrack(track);
+        }
+      } catch (err) {
+        console.warn("Audio capture unavailable:", err);
+      }
+
+      const mimeType = chooseMimeType();
+      recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 6_000_000 })
+        : new MediaRecorder(stream);
+
+      recorder.ondataavailable = ev => {
+        if (ev.data && ev.data.size) chunks.push(ev.data);
+      };
+
+      recorder.onerror = ev => {
+        console.error(ev);
+        status.innerHTML = '<span class="danger">Export recorder error.</span>';
+      };
+
+      recorder.onstop = () => {
+        const type = recorder.mimeType || mimeType || "video/webm";
+        const blob = new Blob(chunks, { type });
+        exportObjectURL = URL.createObjectURL(blob);
+
+        const isMp4 = type.includes("mp4");
+        const base = (loadedFile.name || "movie").replace(/\.[^.]+$/, "");
+        saveLink.href = exportObjectURL;
+        saveLink.download = `${base}_anaglyph.${isMp4 ? "mp4" : "webm"}`;
+        saveLink.classList.remove("hidden");
+
+        exporting = false;
+        exportBtn.disabled = false;
+        importBtn.disabled = false;
+        cancelBtn.classList.add("hidden");
+        progress.classList.add("hidden");
+        status.textContent = "Export finished. Tap “Save exported video”.";
+        playBtn.textContent = "▶ Play";
+      };
+
+      recorder.start(1000);
+      status.textContent = "Exporting in real time. Keep this app open until it finishes.";
+      await video.play();
+      playBtn.textContent = "⏸ Pause";
+      scheduleFrames();
+
+    } catch (err) {
+      console.error(err);
+      exporting = false;
+      exportBtn.disabled = false;
+      importBtn.disabled = false;
+      cancelBtn.classList.add("hidden");
+      progress.classList.add("hidden");
+      status.innerHTML = `<span class="danger">Export failed: ${String(err.message || err)}</span>`;
+    }
+  }
+
+  function stopExport(cancelled) {
+    if (!exporting) return;
+    video.pause();
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+
+    if (cancelled) {
+      chunks = [];
+      status.textContent = "Export cancelled.";
+    }
+  }
+
+  importBtn.addEventListener("click", () => fileInput.click());
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+
+    loadedFile = file;
+    if (fileURL) URL.revokeObjectURL(fileURL);
+    fileURL = URL.createObjectURL(file);
+    video.src = fileURL;
+    video.load();
+
+    fileName.textContent = file.name;
+    status.textContent = "Loading video…";
+    saveLink.classList.add("hidden");
+  });
+
+  video.addEventListener("loadedmetadata", () => {
+    try {
+      if (!previewRenderer) previewRenderer = new AnaglyphRenderer(previewCanvas);
+    } catch (err) {
+      status.innerHTML = `<span class="danger">${String(err.message || err)}</span>`;
+      return;
+    }
+
+    timeline.disabled = false;
+    playBtn.disabled = false;
+    exportBtn.disabled = false;
+
+    mode.value = "2d";
+    setCropRanges();
+
+    cropL.range.value = cropL.num.value = 0;
+    cropR.range.value = cropR.num.value = 0;
+    cropT.range.value = cropT.num.value = 0;
+    cropB.range.value = cropB.num.value = 0;
+
+    // Keep phone-friendly defaults unless the source is smaller.
+    const defaultW = Math.min(1280, even(video.videoWidth));
+    const defaultH = Math.min(720, even(video.videoHeight));
+    outW.range.value = outW.num.value = Math.max(320, defaultW);
+    outH.range.value = outH.num.value = Math.max(240, defaultH);
+
+    timeLabel.textContent = `00:00 / ${formatTime(video.duration)}`;
+    status.textContent = `${video.videoWidth}×${video.videoHeight} • ${formatTime(video.duration)} loaded.`;
+  });
+
+  video.addEventListener("loadeddata", renderNow);
+  video.addEventListener("seeked", () => {
+    renderNow();
+    updateTimeline();
+  });
+
+  video.addEventListener("play", () => {
+    playBtn.textContent = "⏸ Pause";
+    scheduleFrames();
+  });
+
+  video.addEventListener("pause", () => {
+    if (!exporting) playBtn.textContent = "▶ Play";
+    renderNow();
+    updateTimeline();
+  });
+
+  video.addEventListener("ended", () => {
+    playBtn.textContent = "▶ Play";
+    updateTimeline();
+    if (exporting && recorder && recorder.state !== "inactive") recorder.stop();
+  });
+
+  playBtn.addEventListener("click", async () => {
+    if (!loadedFile || exporting) return;
+    if (video.paused || video.ended) {
+      if (video.ended) video.currentTime = 0;
+      try {
+        await ensureAudioGraph();
+      } catch {}
+      await video.play();
+    } else {
+      video.pause();
+    }
+  });
+
+  timeline.addEventListener("input", () => {
+    if (!video.duration) return;
+    video.currentTime = (Number(timeline.value) / 1000) * video.duration;
+  });
+
+  mode.addEventListener("change", resetOutputForMode);
+  exportBtn.addEventListener("click", beginExport);
+  cancelBtn.addEventListener("click", () => stopExport(true));
+
+  window.addEventListener("beforeunload", () => {
+    if (fileURL) URL.revokeObjectURL(fileURL);
+    if (exportObjectURL) URL.revokeObjectURL(exportObjectURL);
+  });
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  }
+})();
+</script>
+</body>
+</html>
