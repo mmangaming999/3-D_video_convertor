@@ -1,3 +1,7 @@
+seems to move farther backward, turn on Invert near/far depth.
+
+One limitation still remains: this is still generating stereo from a single camera view. When an object shifts sideways, parts of the background that were hidden behind it don't actually exist in the original frame. So very strong pop-out can create edge artifacts. The next big quality improvement would be depth-based left/right view synthesis with occlusion filling, which is closer to how proper 2D→3D conversion works. 
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -9,7 +13,7 @@
   <meta name="apple-mobile-web-app-title" content="Anaglyph 3D AI">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <title>Anaglyph 3D AI Video Converter</title>
+  <title>Anaglyph 3D AI Pop-out Converter</title>
   <style>
     :root {
       color-scheme: dark;
@@ -171,7 +175,7 @@
 </head>
 <body>
 <div class="app">
-  <h1>Anaglyph 3D AI Video Converter</h1>
+  <h1>Anaglyph 3D AI Pop-out Converter</h1>
 
   <div class="toolbar">
     <input id="fileInput" type="file" accept="video/*">
@@ -224,6 +228,20 @@
         <input id="nearBoostNum" type="number" min="50" max="250" value="120">
       </div>
       <div class="row">
+        <label for="screenPlaneRange">Screen plane</label>
+        <input id="screenPlaneRange" type="range" min="5" max="95" value="55">
+        <input id="screenPlaneNum" type="number" min="5" max="95" value="55">
+      </div>
+      <div class="row">
+        <label for="popoutRange">Pop-out</label>
+        <input id="popoutRange" type="range" min="0" max="250" value="140">
+        <input id="popoutNum" type="number" min="0" max="250" value="140">
+      </div>
+      <div class="check-row">
+        <input id="invertDepth" type="checkbox">
+        <label for="invertDepth">Invert near/far depth</label>
+      </div>
+      <div class="row">
         <label for="smoothRange">Smoothing</label>
         <input id="smoothRange" type="range" min="0" max="95" value="70">
         <input id="smoothNum" type="number" min="0" max="95" value="70">
@@ -233,7 +251,7 @@
         <input id="depthFpsRange" type="range" min="1" max="6" value="3">
         <input id="depthFpsNum" type="number" min="1" max="6" value="3">
       </div>
-      <p class="note">First AI load downloads the model. On phones, 2–3 depth updates per second is usually best.</p>
+      <p class="note">Screen plane controls what sits at the display surface. Objects closer than it can pop out toward you. If near/far looks reversed, enable Invert near/far depth.</p>
     </section>
 
     <section class="card">
@@ -333,6 +351,7 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   const saveLink = $("saveLink");
   const mode = $("mode");
   const useAi = $("useAi");
+  const invertDepth = $("invertDepth");
   const aiBadge = $("aiBadge");
 
   let fileURL = null;
@@ -395,6 +414,8 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
   const cropT = syncPair("cropTopRange", "cropTopNum", renderNow);
   const cropB = syncPair("cropBottomRange", "cropBottomNum", renderNow);
   const nearBoost = syncPair("nearBoostRange", "nearBoostNum", renderNow);
+  const screenPlane = syncPair("screenPlaneRange", "screenPlaneNum", renderNow);
+  const popout = syncPair("popoutRange", "popoutNum", renderNow);
   const smooth = syncPair("smoothRange", "smoothNum", renderNow);
   const depthFps = syncPair("depthFpsRange", "depthFpsNum", renderNow);
 
@@ -472,6 +493,9 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
         uniform float uRedGain;
         uniform float uCyanGain;
         uniform float uNearBoost;
+        uniform float uScreenPlane;
+        uniform float uPopout;
+        uniform int uInvertDepth;
 
         vec2 cropLocal(vec2 p) {
           return vec2(
@@ -498,8 +522,28 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
             float shift = uGap;
             if (uUseDepth == 1) {
               float d = texture2D(uDepth, cropLocal(vUv)).r;
-              d = pow(clamp(d, 0.0, 1.0), uNearBoost);
-              shift = uGap * d;
+              d = clamp(d, 0.0, 1.0);
+              if (uInvertDepth == 1) {
+                d = 1.0 - d;
+              }
+
+              // d > screen plane = nearer than the screen
+              // d < screen plane = farther than the screen
+              float p = clamp(uScreenPlane, 0.01, 0.99);
+
+              if (d >= p) {
+                float nearAmount = (d - p) / (1.0 - p);
+                nearAmount = pow(clamp(nearAmount, 0.0, 1.0), uNearBoost);
+
+                // NEGATIVE shift reverses the disparity, causing pop-out.
+                shift = -uGap * nearAmount * uPopout;
+              } else {
+                float farAmount = (p - d) / p;
+                farAmount = pow(clamp(farAmount, 0.0, 1.0), uNearBoost);
+
+                // Positive shift keeps far objects behind the screen.
+                shift = uGap * farAmount;
+              }
             }
 
             vec2 rp = vec2(clamp(vUv.x + shift, 0.0, 1.0), vUv.y);
@@ -588,6 +632,9 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       this.locRed = gl.getUniformLocation(program, "uRedGain");
       this.locCyan = gl.getUniformLocation(program, "uCyanGain");
       this.locNearBoost = gl.getUniformLocation(program, "uNearBoost");
+      this.locScreenPlane = gl.getUniformLocation(program, "uScreenPlane");
+      this.locPopout = gl.getUniformLocation(program, "uPopout");
+      this.locInvertDepth = gl.getUniformLocation(program, "uInvertDepth");
       gl.uniform1i(gl.getUniformLocation(program, "uVideo"), 0);
       gl.uniform1i(gl.getUniformLocation(program, "uDepth"), 1);
 
@@ -640,6 +687,9 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       gl.uniform1f(this.locRed, settings.redGain);
       gl.uniform1f(this.locCyan, settings.cyanGain);
       gl.uniform1f(this.locNearBoost, settings.nearBoost);
+      gl.uniform1f(this.locScreenPlane, settings.screenPlane);
+      gl.uniform1f(this.locPopout, settings.popout);
+      gl.uniform1i(this.locInvertDepth, settings.invertDepth ? 1 : 0);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
@@ -665,7 +715,10 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
       gapNorm: clamp(gap.num.value, 0, 80) / Math.max(2, even(outW.num.value)),
       redGain: clamp(red.num.value, 0, 200) / 100,
       cyanGain: clamp(cyan.num.value, 0, 200) / 100,
-      nearBoost: clamp(nearBoost.num.value, 50, 250) / 100
+      nearBoost: clamp(nearBoost.num.value, 50, 250) / 100,
+      screenPlane: clamp(screenPlane.num.value, 5, 95) / 100,
+      popout: clamp(popout.num.value, 0, 250) / 100,
+      invertDepth: invertDepth.checked
     };
   }
 
@@ -1261,6 +1314,10 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
 
   mode.addEventListener("change", () => {
     resetOutputForMode();
+  });
+
+  invertDepth.addEventListener("change", () => {
+    renderNow();
   });
 
   useAi.addEventListener("change", async () => {
